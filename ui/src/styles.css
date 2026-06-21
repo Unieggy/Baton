@@ -214,6 +214,25 @@ svg { flex: 0 0 auto; }
 .check .ok { color: var(--green); background: rgba(74, 222, 128, 0.12); }
 .check .bad { color: var(--red); background: rgba(248, 113, 113, 0.12); }
 .check .pending { color: var(--muted); background: var(--elev); }
+.check-cmd {
+  flex: 1;
+  min-width: 0;
+  color: var(--soft);
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.check-state {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.check-state.pass { color: var(--green); }
+.check-state.fail { color: var(--red); }
+.check-state.pending { color: var(--muted); }
 
 /* ---- controls ------------------------------------------------------- */
 .controls {
