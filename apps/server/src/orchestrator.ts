@@ -53,6 +53,20 @@ export interface HandoffMeta {
   verificationCommand: string;
   sourceTokens: number;
   workspaceDir: string;
+  /** Target-provider credential for this in-memory distillation call only. */
+  apiKey?: string;
+}
+
+export type ProviderApiKeys = Partial<Record<AgentId, string>>;
+export interface StartAgentOptions {
+  model?: string;
+  prompt?: string;
+  /** Backward-compatible key for the provider being launched. */
+  apiKey?: string;
+  /** In-memory credentials used by both launch and automatic handoff. */
+  apiKeys?: ProviderApiKeys;
+  /** Per-provider models retained for an automatic continuation. */
+  models?: Partial<Record<AgentId, string>>;
 }
 
 /** The handoff builder seam — Michael's `packages/context` provides the real one. */
@@ -114,13 +128,18 @@ export class Orchestrator {
   private readonly runtime = new Map<string, SessionRuntime>();
   private readonly handoffs = new Map<string, Promise<HandoffPacket>>();
   private readonly automaticHandoffs = new Map<string, number>();
+  private readonly providerKeys = new Map<string, ProviderApiKeys>();
+  private readonly providerModels = new Map<
+    string,
+    Partial<Record<AgentId, string>>
+  >();
 
   constructor(private readonly deps: OrchestratorDeps) {}
 
   /** Start Claude on a freshly created session or from a saved handoff. */
   async startClaude(
     sessionId: string,
-    opts: { model?: string; prompt?: string; apiKey?: string } = {}
+    opts: StartAgentOptions = {}
   ): Promise<void> {
     await this.startResumableAgent(sessionId, "claude", "claude_running", opts);
   }
@@ -196,6 +215,7 @@ export class Orchestrator {
           verificationCommand: session.verificationCommand,
           sourceTokens: usage.tokens,
           workspaceDir: session.workspaceDir,
+          apiKey: this.providerKey(sessionId, targetAgent),
         })
       );
 
@@ -216,6 +236,7 @@ export class Orchestrator {
       this.deps.sessions.transition(sessionId, "failed", {
         error: err instanceof Error ? err.message : String(err),
       });
+      this.clearProviderConfig(sessionId);
       throw err;
     }
   }
@@ -223,7 +244,7 @@ export class Orchestrator {
   /** Start Codex on a freshly created session or from a saved handoff. */
   async startCodex(
     sessionId: string,
-    opts: { model?: string; prompt?: string; apiKey?: string } = {}
+    opts: StartAgentOptions = {}
   ): Promise<void> {
     await this.startResumableAgent(sessionId, "codex", "codex_running", opts);
   }
@@ -232,8 +253,9 @@ export class Orchestrator {
     sessionId: string,
     provider: AgentId,
     targetState: "claude_running" | "codex_running",
-    opts: { model?: string; prompt?: string; apiKey?: string } = {}
+    opts: StartAgentOptions = {}
   ): Promise<void> {
+    this.rememberProviderConfig(sessionId, provider, opts);
     const session = this.deps.sessions.get(sessionId);
     const packet = await this.deps.store.loadHandoff(sessionId);
     if (!packet && session.state !== "created") {
@@ -249,9 +271,9 @@ export class Orchestrator {
     }
     try {
       await this.startAgent(sessionId, provider, targetState, {
-        model: opts.model,
+        model: opts.model ?? this.providerModels.get(sessionId)?.[provider],
         prompt: opts.prompt,
-        apiKey: opts.apiKey,
+        apiKey: this.providerKey(sessionId, provider),
         manifestPath,
       });
     } finally {
@@ -295,7 +317,13 @@ export class Orchestrator {
       this.emit(sessionId, "session.completed", {
         verificationCommand: session.verificationCommand,
       });
+    } else {
+      this.emit(sessionId, "session.failed", {
+        error: `verification failed (exit ${result.exitCode})`,
+        verificationCommand: session.verificationCommand,
+      });
     }
+    this.clearProviderConfig(sessionId);
     return result;
   }
 
@@ -325,6 +353,8 @@ export class Orchestrator {
       .map((rt) => rt.adapter)
       .filter((adapter): adapter is AgentAdapter => adapter !== null);
     await Promise.allSettled(adapters.map((adapter) => adapter.stop()));
+    this.providerKeys.clear();
+    this.providerModels.clear();
   }
 
   // --- internals ----------------------------------------------------------
@@ -353,7 +383,11 @@ export class Orchestrator {
     if (startingSession) {
       this.emit(sessionId, "session.started", { provider });
     }
-    this.emit(sessionId, "agent.launching", { target: provider });
+    this.emit(sessionId, "agent.launching", {
+      target: provider,
+      resumed: Boolean(opts.manifestPath),
+      supportsInput: adapter.capabilities().supportsInput,
+    });
 
     try {
       await adapter.start(
@@ -371,6 +405,10 @@ export class Orchestrator {
       this.deps.sessions.transition(sessionId, "failed", {
         error: err instanceof Error ? err.message : String(err),
       });
+      this.emit(sessionId, "session.failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      this.clearProviderConfig(sessionId);
       throw err;
     }
   }
@@ -473,6 +511,43 @@ export class Orchestrator {
     return state === "claude_running" || state === "codex_running";
   }
 
+  private rememberProviderConfig(
+    sessionId: string,
+    provider: AgentId,
+    opts: StartAgentOptions
+  ): void {
+    const current = this.providerKeys.get(sessionId) ?? {};
+    const next: ProviderApiKeys = { ...current };
+    for (const id of ["claude", "codex"] as const) {
+      const key = opts.apiKeys?.[id]?.trim();
+      if (key) next[id] = key;
+    }
+    const direct = opts.apiKey?.trim();
+    if (direct) next[provider] = direct;
+    if (Object.keys(next).length > 0) this.providerKeys.set(sessionId, next);
+
+    const currentModels = this.providerModels.get(sessionId) ?? {};
+    const nextModels = { ...currentModels };
+    for (const id of ["claude", "codex"] as const) {
+      const model = opts.models?.[id]?.trim();
+      if (model) nextModels[id] = model;
+    }
+    const directModel = opts.model?.trim();
+    if (directModel) nextModels[provider] = directModel;
+    if (Object.keys(nextModels).length > 0) {
+      this.providerModels.set(sessionId, nextModels);
+    }
+  }
+
+  private providerKey(sessionId: string, provider: AgentId): string | undefined {
+    return this.providerKeys.get(sessionId)?.[provider];
+  }
+
+  private clearProviderConfig(sessionId: string): void {
+    this.providerKeys.delete(sessionId);
+    this.providerModels.delete(sessionId);
+  }
+
   private emit(
     sessionId: string,
     type: RelayEventType,
@@ -536,10 +611,29 @@ export const compressorCreateHandoff: CreateHandoff = (evidence, meta) =>
       cwd: meta.workspaceDir,
       backend:
         meta.targetAgent === "codex"
-          ? rootCodexAdapter.compress
-          : rootClaudeAdapter.compress,
+          ? (prompt, opts) =>
+              rootCodexAdapter.compress(prompt, {
+                ...opts,
+                env: providerEnv("codex", meta.apiKey),
+              })
+          : (prompt, opts) =>
+              rootClaudeAdapter.compress(prompt, {
+                ...opts,
+                env: providerEnv("claude", meta.apiKey),
+              }),
     }
   );
+
+function providerEnv(
+  provider: AgentId,
+  apiKey?: string
+): NodeJS.ProcessEnv | undefined {
+  if (!apiKey) return undefined;
+  return {
+    ...process.env,
+    [provider === "claude" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"]: apiKey,
+  };
+}
 
 /**
  * Deterministic placeholder handoff builder so the handoff route works before

@@ -14,6 +14,10 @@ import {
 } from "./orchestrator";
 import { SessionManager } from "./session-manager";
 import { FakeAgentAdapter } from "./adapters/fake";
+import type {
+  AgentStartOptions,
+  RelayEventSink,
+} from "./adapters/types";
 import { HandoffPacket } from "../../../packages/shared/handoff";
 import type { RelayEvent } from "../../../packages/shared/events";
 
@@ -109,7 +113,7 @@ test("Codex can be the initial live agent", async () => {
 });
 
 test("a failing verification moves the session to failed", async () => {
-  const { orch, sessions } = makeOrchestrator();
+  const { orch, sessions, broadcast } = makeOrchestrator();
   const s = newSession(sessions, "exit 1");
   await orch.startClaude(s.id);
   await orch.buildHandoff(s.id);
@@ -117,6 +121,7 @@ test("a failing verification moves the session to failed", async () => {
   const result = await orch.verify(s.id);
   assert.equal(result.passed, false);
   assert.equal(sessions.get(s.id).state, "failed");
+  assert.ok(broadcast.some((event) => event.type === "session.failed"));
 });
 
 test("a handoff-builder failure leaves the session in failed, not stuck", async () => {
@@ -144,6 +149,62 @@ test("rate-limit output automatically hands off and resumes the target", async (
   assert.equal(packet?.trigger, "rate_limit");
   assert.ok(broadcast.some((e) => e.type === "limit.detected"));
   assert.ok(broadcast.some((e) => e.type === "agent.switched"));
+});
+
+test("automatic handoff keeps provider keys in memory for distill and target launch", async () => {
+  const sessions = new SessionManager();
+  const store = new InMemoryEventStore();
+  let handoffKey: string | undefined;
+  let codexStart: AgentStartOptions | undefined;
+  class RecordingCodex extends FakeAgentAdapter {
+    override async start(
+      opts: AgentStartOptions,
+      onEvent: RelayEventSink
+    ): Promise<void> {
+      codexStart = opts;
+      await super.start(opts, onEvent);
+    }
+  }
+  const orch = new Orchestrator({
+    sessions,
+    store,
+    adapters: {
+      claude: () => new FakeAgentAdapter({ id: "claude" }),
+      codex: () => new RecordingCodex({ id: "codex" }),
+    },
+    createHandoff: (evidence, meta) => {
+      handoffKey = meta.apiKey;
+      return fallbackCreateHandoff(evidence, meta);
+    },
+  });
+  const s = newSession(sessions);
+  await orch.startClaude(s.id, {
+    models: {
+      claude: "claude-model",
+      codex: "codex-model",
+    },
+    apiKeys: {
+      claude: "anthropic-secret",
+      codex: "openai-secret",
+    },
+  });
+
+  orch.sendInput(s.id, "API error 429 rate limit reached\n");
+
+  await waitFor(() => sessions.get(s.id).state === "codex_running");
+  assert.equal(handoffKey, "openai-secret");
+  assert.equal(codexStart?.apiKey, "openai-secret");
+  assert.equal(codexStart?.model, "codex-model");
+  assert.equal(
+    JSON.stringify(await orch.getEvents(s.id)).includes("openai-secret"),
+    false,
+    "credentials must never enter the event timeline"
+  );
+  assert.equal(
+    JSON.stringify(await store.loadHandoff(s.id)).includes("openai-secret"),
+    false,
+    "credentials must never enter the handoff packet"
+  );
 });
 
 test("context pressure automatically hands off and resumes the target", async () => {

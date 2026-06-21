@@ -1,15 +1,17 @@
-# Relay
+# Baton
 
-**Relay compiles noisy agent work into the smallest verified state another coding tool needs to continue.**
+![Baton logo](docs/baton-logo.png)
+
+**Baton compiles noisy agent work into the smallest verified state another coding tool needs to continue.**
 
 When an AI coding agent hits a usage limit, crashes, or stalls mid-task, you
-normally have to re-explain everything to the next tool. Relay captures the
+normally have to re-explain everything to the next tool. Baton captures the
 unfinished work from *factual evidence* (git diff, test exit codes, terminal
 output), compiles a small portable **handoff packet**, launches a **different**
 agent in the same repository, and verifies whether it actually finished — the
 developer never re-explains the task.
 
-Relay is not an editor or a Cursor clone. It transfers work *between* independent
+Baton is not an editor or a Cursor clone. It transfers work *between* independent
 tools (Claude Code ⇄ Codex CLI) through a visible, provider-neutral manifest.
 
 ---
@@ -22,13 +24,23 @@ npm run demo
 ```
 
 Open the printed dashboard URL (`http://127.0.0.1:4173/?api=…&ws=…`) and click
-**Start Relay**. The demo runs deterministic fake agents end-to-end — no provider
-CLI or auth required.
+**Start Baton**. The demo runs deterministic fake agents end-to-end — no provider
+CLI or auth required. Fake Claude reports a delayed usage limit, Baton
+automatically hands the task to fake Codex, and **Verify** runs the real fixture
+tests.
 
-Run against the real CLIs (must be installed + authenticated):
+If those ports are already occupied, choose explicit alternatives:
 
 ```bash
-RELAY_FAKE_AGENTS=0 npm run demo
+PORT=4001 WEB_PORT=4174 npm run demo
+```
+
+Run the desktop app against the real subscription-authenticated CLIs:
+
+```bash
+claude                # complete Claude sign-in once, then exit
+codex login           # complete Codex/ChatGPT sign-in once
+npm run desktop:real  # leave API-key fields blank
 ```
 
 ### Docked sidebar (terminal companion)
@@ -44,28 +56,30 @@ Or open the rail-only view in any browser: `http://127.0.0.1:4173/?rail=1`.
 
 ### Desktop companion (Electron)
 
-A real always-on-top window that snaps to a screen edge — the "magnet"
-companion — and adds a native folder picker for the workspace:
+A native window that snaps to a screen edge — the "magnet" companion — and
+adds a native folder picker for the workspace:
 
 ```bash
-npm run demo                 # server + UI
-npm run desktop              # docks to the right edge
+npm run desktop              # one-command safe demo; docks right
+npm run desktop:real         # real locally authenticated CLIs
 RELAY_DOCK=left  npm run desktop
 RELAY_DOCK=float npm run desktop
+RELAY_ONTOP=1    npm run desktop  # optional floating/always-on-top mode
 ```
 
-Same React UI as the browser — no rewrite. Inside the desktop app the Workspace
-field gains a **Browse…** button (native OS folder dialog).
+The command starts the server, UI, and Electron shell together; closing Electron
+stops the local stack. Inside the desktop app the Workspace field gains a
+**Browse…** button (native OS folder dialog).
 
 ## The demo flow
 
 1. An agent (Claude) starts fixing a real bug in `demo-repo/` — the `users.age`
    migration runs `ALTER TABLE` unconditionally, so the focused test fails.
 2. The agent hits a usage limit with the test still red.
-3. Relay freezes the workspace, distills a validated handoff packet, and launches
+3. Baton freezes the workspace, distills a validated handoff packet, and launches
    the other agent (Codex) in the same repo from that packet alone.
-4. Codex finishes the task; Relay runs the verification command and shows the
-   real exit code + final diff.
+4. Codex finishes the task; click **Verify** and Baton runs the real verification
+   command, showing the exit code and verdict.
 
 The user never re-explains the task during the transfer.
 
@@ -74,7 +88,7 @@ The user never re-explains the task during the transfer.
 ```text
 ┌─────────────────────────────────────────────────────────────┐
 │  React / Vite dashboard (ui/)                                │
-│  live terminal + Relay rail   ◀── WebSocket events           │
+│  live terminal + Baton rail   ◀── WebSocket events           │
 └───────────────┬─────────────────────────────────────────────┘
                 │ HTTP (/api) + WS (/ws/sessions/:id)
 ┌───────────────▼─────────────────────────────────────────────┐
@@ -95,6 +109,9 @@ The user never re-explains the task during the transfer.
 The browser requests actions; the server controls processes and secrets.
 Evidence flows from the repo and command exit codes — **the repository and
 executable evidence outrank agent summaries.**
+
+The local control server binds to loopback only (`127.0.0.1`) and accepts
+browser/WebSocket traffic from the configured dashboard origin.
 
 ## Repository map
 
@@ -130,6 +147,6 @@ TypeScript · Node.js · React · Vite · Redis · WebSocket · Zod · Claude ·
 
 - Real multi-CLI runs with authenticated `claude` + `codex`
 - Session persistence across server restarts
-- RelayBench: measured with-vs-without continuation comparisons
+- BatonBench baseline runs (the Baton side is measured; no-Baton is still empty)
 - Controlled multi-hop handoffs
-- Package the rail as a true terminal companion / desktop overlay
+- Signed desktop packaging and a user-configurable dock layout

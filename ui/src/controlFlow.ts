@@ -78,6 +78,8 @@ export async function switchAgent(
         model: modelFor(opts.initialAgent, opts.models),
         prompt: opts.prompt,
         apiKey: keyFor(opts.initialAgent),
+        apiKeys: opts.apiKeys,
+        models: opts.models,
       }),
     });
   }
@@ -98,6 +100,8 @@ export async function switchAgent(
       model: modelFor(opts.target, opts.models),
       prompt: opts.prompt,
       apiKey: keyFor(opts.target),
+      apiKeys: opts.apiKeys,
+      models: opts.models,
     }),
   });
 }

@@ -45,9 +45,9 @@ function main(): void {
   const runtime = createAppRuntime(env);
   const { server } = runtime;
 
-  server.listen(env.PORT, () => {
+  server.listen(env.PORT, env.HOST, () => {
     console.log(
-      `[relay:server] listening on http://localhost:${env.PORT} (web=${env.WEB_URL})`
+      `[relay:server] listening on http://${env.HOST}:${env.PORT} (web=${env.WEB_URL})`
     );
   });
 

@@ -81,7 +81,7 @@ export const codexCompress: CompressBackend = (prompt, opts) =>
   new Promise<string>((resolve, reject) => {
     const child = spawn("codex", codexArgs(opts.model, opts.cwd, prompt), {
       cwd: opts.cwd,
-      env: process.env,
+      env: opts.env ?? process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";

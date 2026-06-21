@@ -53,6 +53,8 @@ export class SessionBroadcaster {
   /** sessionId → the set of live client sockets subscribed to it. */
   private readonly clients = new Map<string, Set<Duplex>>();
 
+  constructor(private readonly allowedOrigin?: string) {}
+
   /** Wire the WebSocket upgrade handler onto an existing HTTP server. */
   attach(server: http.Server): this {
     server.on("upgrade", (req, socket, head) =>
@@ -71,8 +73,14 @@ export class SessionBroadcaster {
     const key = req.headers["sec-websocket-key"];
     const isWebSocket =
       (req.headers["upgrade"] ?? "").toLowerCase() === "websocket";
+    const origin = req.headers.origin;
 
-    if (!match || !key || !isWebSocket) {
+    if (
+      !match ||
+      !key ||
+      !isWebSocket ||
+      (this.allowedOrigin && origin && origin !== this.allowedOrigin)
+    ) {
       socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
       socket.destroy();
       return;

@@ -32,7 +32,7 @@ export const claudeCompress: CompressBackend = (prompt, opts) =>
     const child = spawn(
       "claude",
       ["-p", "--output-format", "json", "--model", opts.model],
-      { cwd: opts.cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] }
+      { cwd: opts.cwd, env: opts.env ?? process.env, stdio: ["pipe", "pipe", "pipe"] }
     );
     let stdout = "";
     let stderr = "";

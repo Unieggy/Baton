@@ -21,7 +21,7 @@ function collect(): { events: RelayEvent[]; sink: RelayEventSink } {
   return { events, sink: (e) => events.push(e) };
 }
 const isTerminal = (s: AgentStatus): boolean => s === "exited" || s === "failed";
-async function waitFor(p: () => boolean, ms = 2000): Promise<void> {
+async function waitFor(p: () => boolean, ms = 5000): Promise<void> {
   const end = Date.now() + ms;
   while (!p()) {
     if (Date.now() > end) throw new Error("waitFor timed out");
@@ -65,13 +65,15 @@ test("omits -m for a non-codex model", async () => {
   assert.equal(parseArgv(outputText(events)).includes("-m"), false);
 });
 
-test("forwards sendInput to stdin", async () => {
-  const { events, sink } = collect();
+test("rejects input because codex exec is one-shot", async () => {
+  const { sink } = collect();
   const a = new CodexAdapter({ executable: FIXTURE });
   await a.start({ sessionId: "s", cwd: process.cwd(), prompt: "go" }, sink);
-  a.sendInput("INPUT-Y\n");
+  assert.throws(
+    () => a.sendInput("INPUT-Y\n"),
+    /one-shot and does not support input/
+  );
   await waitFor(() => isTerminal(a.status()));
-  assert.match(outputText(events), /INPUT-Y/);
 });
 
 test("every emitted event carries the session id and the codex agent tag", async () => {
@@ -137,9 +139,9 @@ test("resumes from a manifest by feeding the packet into the argv prompt", async
   }
 });
 
-test("capabilities advertise input + resume", () => {
+test("capabilities advertise one-shot resume", () => {
   const caps = new CodexAdapter().capabilities();
   assert.equal(caps.id, "codex");
-  assert.equal(caps.supportsInput, true);
+  assert.equal(caps.supportsInput, false);
   assert.equal(caps.supportsResume, true);
 });

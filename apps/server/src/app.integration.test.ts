@@ -83,6 +83,25 @@ test("createAppRuntime exposes dependencies and closes them once", async () => {
   assert.equal(storeClosed, 1);
 });
 
+test("fake-agent runtime builds handoffs without a provider distiller", async () => {
+  const runtime = createAppRuntime(
+    loadEnv({ PORT: "0", RELAY_FAKE_AGENTS: "1" })
+  );
+  const session = runtime.sessions.create({
+    goal: "Exercise the deterministic demo.",
+    verificationCommand: "exit 0",
+    workspaceDir: process.cwd(),
+  });
+  try {
+    await runtime.orchestrator.startClaude(session.id);
+    const packet = await runtime.orchestrator.buildHandoff(session.id);
+    assert.equal(packet.task.goal, "Exercise the deterministic demo.");
+    assert.match(packet.state.summary, /file\(s\) changed/);
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("CORS allows only the configured web origin", async () => {
   const env = loadEnv({ PORT: "0", WEB_URL: "http://localhost:4173" });
   const runtime = createAppRuntime(env);

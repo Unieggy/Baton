@@ -1,11 +1,10 @@
 /**
  * Relay server — Claude agent adapter
  * -----------------------------------
- * Runs Claude Code headless via the process runner. Claude reads its prompt from
- * stdin, so the composed prompt (or resumed handoff packet) is written to stdin
- * after start, and `sendInput` forwards further input to the same stream.
+ * Runs Claude Code headless via the process runner. Print mode is one-shot, so
+ * the composed prompt (or resumed handoff packet) is passed positionally.
  *
- *   claude -p --output-format json [--model <model>]
+ *   claude -p --output-format text --permission-mode acceptEdits [--model <model>]
  *
  * Claude is just one `AgentAdapter` — nothing here is treated as a home base.
  */
@@ -23,7 +22,7 @@ export class ClaudeAdapter extends ProcessAgentAdapter {
     return {
       id: "claude",
       displayName: "Claude Code",
-      supportsInput: true,
+      supportsInput: false,
       supportsResume: true,
       models: this.config.models ?? DEFAULT_MODELS,
       contextWindow: 200_000,
@@ -31,15 +30,19 @@ export class ClaudeAdapter extends ProcessAgentAdapter {
   }
 
   protected plan(opts: AgentStartOptions): AgentLaunchPlan {
-    const args = ["-p", "--output-format", "json"];
+    // Text keeps the live log human-readable. acceptEdits lets the headless
+    // coding run modify the selected workspace without an invisible prompt.
+    const args = [
+      "-p",
+      "--output-format",
+      "text",
+      "--permission-mode",
+      "acceptEdits",
+    ];
     if (opts.model) args.push("--model", opts.model);
     const prompt = this.composePrompt(opts);
-    return {
-      command: this.executable,
-      args,
-      // Claude consumes its prompt on stdin.
-      stdinPrompt: prompt,
-    };
+    args.push(prompt);
+    return { command: this.executable, args, promptForUsage: prompt };
   }
 }
 

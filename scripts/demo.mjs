@@ -10,11 +10,33 @@
  */
 
 import { spawn } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const API_PORT = process.env.PORT ?? "4000";
-const WEB_PORT = "4173";
+const WEB_PORT = process.env.WEB_PORT ?? "4173";
 const WEB_URL = `http://127.0.0.1:${WEB_PORT}`;
 const fake = process.env.RELAY_FAKE_AGENTS ?? "1";
+
+// Every fake demo starts from the same intentionally broken fixture. The fake
+// Codex adapter repairs this exact snippet after receiving the handoff packet.
+const migrationPath = resolve("demo-repo/migrate.ts");
+const brokenMigration =
+  '  db.run("ALTER TABLE users ADD COLUMN age INT");';
+const fixedMigration = [
+  '  const columns = db.tableInfo("users").map((column) => column.name);',
+  '  if (!columns.includes("age")) {',
+  '    db.run("ALTER TABLE users ADD COLUMN age INT");',
+  "  }",
+].join("\n");
+function resetDemoFixture() {
+  if (fake === "0") return;
+  const migration = readFileSync(migrationPath, "utf8");
+  if (migration.includes(fixedMigration)) {
+    writeFileSync(migrationPath, migration.replace(fixedMigration, brokenMigration));
+  }
+}
+resetDemoFixture();
 
 const children = [];
 function run(name, cmd, args, env) {
@@ -44,6 +66,7 @@ function shutdown() {
       /* already gone */
     }
   }
+  resetDemoFixture();
   setTimeout(() => process.exit(0), 300);
 }
 process.on("SIGINT", shutdown);
@@ -54,7 +77,19 @@ run("server", "npx", ["tsx", "apps/server/src/index.ts"], {
   WEB_URL,
   RELAY_FAKE_AGENTS: fake,
 });
-run("ui", "npx", ["vite", "--config", "ui/vite.config.ts"], {});
+run(
+  "ui",
+  "npx",
+  [
+    "vite",
+    "--config",
+    "ui/vite.config.ts",
+    "--port",
+    WEB_PORT,
+    "--strictPort",
+  ],
+  {}
+);
 
 setTimeout(() => {
   console.log("\n────────────────────────────────────────────────────────");

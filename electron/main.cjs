@@ -5,8 +5,9 @@
  * screen edge — the "magnet" terminal companion. Reuses the exact same React UI;
  * no rewrite. Also exposes a native folder picker the browser can't provide.
  *
- *   npm run demo                 # server + UI in one shell
- *   npm run desktop              # this app in another (docks right)
+ *   npm run desktop              # starts the full demo stack + this app
+ *   npm run desktop:real         # uses authenticated Claude/Codex CLIs
+ *   npm run desktop:shell        # shell only, when the stack already runs
  *   RELAY_DOCK=left npm run desktop
  *   RELAY_DOCK=float npm run desktop
  */
@@ -35,9 +36,14 @@ function createWindow() {
     width: WIDTH,
     height: 760,
     minWidth: 320,
-    title: "Relay",
+    title: "Baton",
     fullscreenable: false,
-    webPreferences: { preload: path.join(__dirname, "preload.cjs") },
+    webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
   });
   // Normal window by default so it alt-tabs and never blocks other apps.
   // Opt in to a floating companion with RELAY_ONTOP=1.
@@ -45,7 +51,7 @@ function createWindow() {
   place(win);
 
   const url = `${UI}/?rail=1&api=${encodeURIComponent(API)}&ws=${encodeURIComponent(WS)}`;
-  win.loadURL(url);
+  void win.loadURL(url);
 
   // Re-snap to the edge if the screen layout changes.
   screen.on("display-metrics-changed", () => place(win));

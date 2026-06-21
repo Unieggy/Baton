@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { demoEvents, demoPacket } from "./demo";
+import { demoPacket } from "./demo";
 import { useRelayStream } from "./useRelayStream";
 import { deriveBench, type BenchRow } from "./bench";
 import {
   activeAgent,
+  activeSupportsInput,
+  currentActivity,
   derivePhase,
   eventLine,
   latestHandoffPacket,
@@ -83,31 +85,21 @@ function ClaudeMark({ size = 22 }: { size?: number }) {
   );
 }
 
-// Claude works the bug, then hits a usage limit with the test still failing.
-const claudeLines: Line[] = [
-  { kind: "muted", value: "Last login: Sun Jun 21 00:14 on ttys002" },
-  { kind: "prompt", value: '$ claude "make the users.age migration safe to re-run"' },
-  { kind: "plain", value: "● reading relay-mock/migrate.ts" },
-  { kind: "plain", value: "● editing relay-mock/migrate.ts  +18" },
-  { kind: "prompt", value: "$ npm test -- migration" },
-  { kind: "pass", value: "✔ shared schemas validate packet defaults" },
-  { kind: "fail", value: "✖ migration remains safe when re-run" },
-  { kind: "muted", value: "  SQLITE_ERROR: duplicate column name: age" },
-  { kind: "fail", value: "✖ claude: API error 429 — usage limit reached" },
-];
+function BatonMark({ size = 18 }: { size?: number }) {
+  return (
+    <span
+      className="baton-mark"
+      style={{ width: size, height: size }}
+      aria-hidden="true"
+    >
+      <i />
+    </span>
+  );
+}
 
-// After the handoff, Codex resumes from the packet and finishes the job.
-const codexLines: Line[] = [
-  { kind: "relay", value: "↪ relay: freezing workspace · 2 files · 37 lines" },
-  { kind: "relay", value: "↪ relay: handoff packet ready · −93% · 1,218 tokens" },
-  { kind: "prompt", value: "$ codex resume --packet relay-7f3a.json" },
-  { kind: "plain", value: "● failure memory loaded — don't retry ALTER blindly" },
-  { kind: "plain", value: "● guarding schema with PRAGMA table_info(users)" },
-  { kind: "prompt", value: "$ npm test -- migration" },
-  { kind: "pass", value: "✔ migration remains safe when re-run" },
-  { kind: "pass", value: "✔ existing user rows remain unchanged" },
-  { kind: "prompt", value: "$ npm test && npm run typecheck" },
-  { kind: "pass", value: "✔ all checks passed" },
+const readyLines: Line[] = [
+  { kind: "relay", value: "↪ baton: control tower ready" },
+  { kind: "muted", value: "Choose a workspace and starting agent, then start Baton." },
 ];
 
 function Terminal({
@@ -146,8 +138,8 @@ function Terminal({
           <i />
           <i />
         </span>
-        <span className="terminal-title">relay — zsh</span>
-        <span className="terminal-branch">relay session</span>
+        <span className="terminal-title">baton — zsh</span>
+        <span className="terminal-branch">baton session</span>
       </header>
       <div
         className="terminal-body"
@@ -183,13 +175,13 @@ function Terminal({
 function Rail({
   phase,
   handoffDone,
-  onSwitch,
   live = false,
   agentName,
   migration,
   sessionLabel = "session 7f3a",
   controls,
-  taskGoal,
+  activity,
+  activityLabel = "NOW",
   packet,
   bench,
   verifyLabel,
@@ -200,13 +192,13 @@ function Rail({
 }: {
   phase: Phase;
   handoffDone: boolean;
-  onSwitch: () => void;
   live?: boolean;
   agentName?: "claude" | "codex";
   migration?: "pass" | "fail" | "pending";
   sessionLabel?: string;
   controls?: ReactNode;
-  taskGoal: string;
+  activity: string;
+  activityLabel?: string;
   packet: HandoffPacket | null;
   bench: BenchRow[];
   verifyLabel: string;
@@ -225,22 +217,22 @@ function Rail({
       ? "failed"
       : completed
         ? "completed"
-      : phase === "switching"
-      ? "relaying context…"
+        : !live
+          ? "ready"
+          : phase === "switching"
+            ? "relaying context…"
       : phase === "resumed"
         ? "resumed · working"
-        : live
-          ? "running"
-          : "usage limit reached";
+        : "running";
 
   // Verification: explicit override in live mode, else derived from phase.
   const migrationOk = migration ? migration === "pass" : phase === "resumed";
 
   return (
-    <aside className="rail" aria-label="Relay">
+    <aside className="rail" aria-label="Baton">
       <header className="rail-head">
-        <span className="dot" />
-        <strong>Relay</strong>
+        <BatonMark />
+        <strong>Baton</strong>
         <span className="session">{sessionLabel}</span>
       </header>
 
@@ -260,12 +252,34 @@ function Rail({
           </div>
         </div>
 
-        <div className="block">
-          <small>WORKING ON</small>
-          <p>{taskGoal}</p>
+        <section className="handoff-chain" aria-label="Handoff chain">
+          <small>HANDOFF CHAIN</small>
+          <div className={`chain-track ${phase}`}>
+            <span className={`chain-node source ${!isCodex ? "active" : "done"}`} />
+            <span className={`chain-node next ${phase !== "working" ? "active" : ""}`} />
+            <span className={`chain-node finish ${completed ? "active" : ""}`} />
+          </div>
+          <div className="chain-labels">
+            <span>{isCodex ? "Claude" : agent.name}</span>
+            <span>{isCodex ? "Codex" : "next agent"}</span>
+            <span>finish</span>
+          </div>
+          <p>
+            <strong>{agent.name}</strong> holds the baton. Context, diffs, and
+            failure memory travel with the handoff; <code>{verifyLabel}</code>{" "}
+            decides when the work is done.
+          </p>
+        </section>
+
+        <div className="block activity">
+          <small>{activityLabel}</small>
+          <p title={activity}>{activity}</p>
         </div>
 
-        <div className={`packet ${handoffDone ? "shown" : ""}`}>
+        <div
+          className={`packet ${handoffDone ? "shown" : ""}`}
+          aria-hidden={!handoffDone}
+        >
           <div className="packet-top">
             <span>
               {packet?.sourceAgent === "codex" ? "Codex" : "Claude"}{" "}
@@ -335,13 +349,13 @@ function Rail({
         </div>
 
         <details className="bench">
-          <summary>RelayBench</summary>
+          <summary>BatonBench</summary>
           <table className="bench-table">
             <thead>
               <tr>
                 <th></th>
-                <th>No Relay</th>
-                <th>Relay</th>
+                <th>No Baton</th>
+                <th>Baton</th>
               </tr>
             </thead>
             <tbody>
@@ -363,31 +377,6 @@ function Rail({
         {controls}
       </div>
 
-      {!live && (
-        <footer className="rail-foot">
-          <button
-            className="switch demo"
-            onClick={onSwitch}
-            disabled={phase !== "working"}
-          >
-            {phase === "working" && (
-              <>
-                <Icon name="spark" size={14} /> Preview handoff
-              </>
-            )}
-            {phase === "switching" && (
-              <>
-                <span className="spinner" /> Relaying…
-              </>
-            )}
-            {phase === "resumed" && (
-              <>
-                <Icon name="check" size={14} /> Handoff complete
-              </>
-            )}
-          </button>
-        </footer>
-      )}
     </aside>
   );
 }
@@ -465,27 +454,37 @@ export function App() {
   const [controlMessage, setControlMessage] = useState("");
   const isLive = currentSessionId !== null;
 
+  useEffect(() => {
+    if (!currentSessionId) return;
+    let cancelled = false;
+    void requestJson<{
+      goal: string;
+      verificationCommand: string;
+      workspaceDir: string;
+      sourceAgent: AgentId;
+    }>(apiBase, `/api/sessions/${currentSessionId}`)
+      .then((session) => {
+        if (cancelled) return;
+        setTask(session.goal);
+        setVerificationCommand(session.verificationCommand);
+        setWorkspaceDir(session.workspaceDir);
+        setInitialAgent(session.sourceAgent);
+      })
+      .catch(() => {
+        // The event stream still provides useful diagnostics if metadata
+        // hydration is temporarily unavailable.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentSessionId, apiBase]);
+
   // Live mode: events come from the server broadcaster.
   const { events, status } = useRelayStream(
     currentSessionId,
     wsBase,
     apiBase
   );
-
-  // Demo mode: scripted Claude → Codex handoff (works offline).
-  const [demoPhase, setDemoPhase] = useState<Phase>("working");
-  const [demoLines, setDemoLines] = useState<Line[]>(claudeLines);
-
-  function runHandoff() {
-    if (demoPhase !== "working") return;
-    setDemoPhase("switching");
-    codexLines.forEach((line, i) => {
-      window.setTimeout(() => {
-        setDemoLines((prev) => [...prev, line]);
-        if (i === codexLines.length - 1) setDemoPhase("resumed");
-      }, 450 * (i + 1));
-    });
-  }
 
   async function runControl(action: string, work: () => Promise<void>): Promise<void> {
     setPendingAction(action);
@@ -530,7 +529,6 @@ export function App() {
         method: "POST",
         body: body ? JSON.stringify(body) : "{}",
       });
-      setControlMessage(action);
     });
   }
 
@@ -560,7 +558,6 @@ export function App() {
           }),
         }
       );
-      setControlMessage(`${agentLabel(initialAgent)} running`);
     });
   }
 
@@ -575,7 +572,6 @@ export function App() {
         prompt: task,
         apiKeys,
       });
-      setControlMessage(`${target} running`);
     });
   }
 
@@ -594,11 +590,11 @@ export function App() {
         },
       ];
 
-  const phase: Phase = isLive ? derivePhase(events) : demoPhase;
-  const lines = isLive ? liveLines : demoLines;
-  const handoffDone = isLive ? packetReady(events) : demoPhase !== "working";
-  const packet = isLive ? latestHandoffPacket(events) : demoPacket;
-  const bench = deriveBench(isLive ? events : demoEvents, packet);
+  const phase: Phase = isLive ? derivePhase(events) : "working";
+  const lines = isLive ? liveLines : readyLines;
+  const handoffDone = isLive ? packetReady(events) : false;
+  const packet = isLive ? latestHandoffPacket(events) : null;
+  const bench = deriveBench(isLive ? events : [], packet);
   const selectedActiveAgent = isLive && events.length ? activeAgent(events) : initialAgent;
   const switchTarget = otherAgent(selectedActiveAgent);
   const sessionComplete = isLive && events.some((event) => event.type === "session.completed");
@@ -609,6 +605,9 @@ export function App() {
         event.type === "session.failed" || event.type === "handoff.failed"
     );
   const sessionTerminal = sessionComplete || sessionFailed;
+  const activity = isLive
+    ? currentActivity(events, task)
+    : task;
   const hasNativePicker =
     typeof window !== "undefined" && Boolean(window.relay?.pickWorkspace);
   async function browseWorkspace(): Promise<void> {
@@ -628,16 +627,6 @@ export function App() {
     <div className="controls" aria-label="Session controls">
       {!isLive ? (
         <>
-          <label className="field">
-            <span>Task</span>
-            <textarea
-              value={task}
-              onChange={(event) => setTask(event.target.value)}
-              disabled={pendingAction !== null}
-              placeholder="What should the agent finish?"
-              rows={2}
-            />
-          </label>
           <label className="field">
             <span>Workspace</span>
             {hasNativePicker ? (
@@ -684,7 +673,6 @@ export function App() {
             onClick={startNewSession}
             disabled={
               pendingAction !== null ||
-              task.trim().length === 0 ||
               workspaceDir.trim().length === 0
             }
           >
@@ -693,15 +681,16 @@ export function App() {
             ) : (
               <Icon name="spark" size={14} />
             )}
-            Start Relay
+            Start Baton
           </button>
           <details className="advanced">
             <summary>Advanced</summary>
             <div className="advanced-fields">
               <p className="advanced-note">
-                Provider login — only for the real CLIs. Leave blank to use{" "}
-                <code>claude login</code> / <code>codex login</code> from your
-                terminal. Keys are sent to your local server for the run only —
+                Provider login — only for the real CLIs. Leave blank to use your
+                existing terminal sessions: open <code>claude</code> once to
+                complete sign-in, and run <code>codex login</code> for Codex.
+                Keys entered here go only to the local server for this run —
                 never stored or logged.
               </p>
               <label className="field">
@@ -748,7 +737,7 @@ export function App() {
                 />
               </label>
               <button type="button" className="action" onClick={openLogs}>
-                Check logs
+                Open full logs
               </button>
             </div>
           </details>
@@ -779,6 +768,9 @@ export function App() {
               Verify
             </button>
           </div>
+          <button type="button" className="action" onClick={openLogs}>
+            Open full logs
+          </button>
         </>
       )}
       {controlMessage && <div className="control-message">{controlMessage}</div>}
@@ -792,7 +784,9 @@ export function App() {
           <Terminal
             lines={lines}
             phase={phase}
-            interactive={isLive && !sessionTerminal}
+            interactive={
+              isLive && !sessionTerminal && activeSupportsInput(events)
+            }
             onInput={(text) =>
               sessionAction("input", "/input", { data: `${text}\n` })
             }
@@ -801,13 +795,13 @@ export function App() {
         <Rail
           phase={phase}
           handoffDone={handoffDone}
-          onSwitch={runHandoff}
           live={isLive}
-          agentName={isLive ? activeAgent(events) : undefined}
+          agentName={isLive ? activeAgent(events) : initialAgent}
           migration={isLive ? migrationState(events) : undefined}
           sessionLabel={isLive ? `session ${currentSessionId}` : "new session"}
           controls={controls}
-          taskGoal={task}
+          activity={activity}
+          activityLabel={isLive ? "NOW" : "GOAL"}
           packet={packet}
           bench={bench}
           verifyLabel={verificationCommand}
@@ -819,10 +813,8 @@ export function App() {
       </div>
       {!config.railOnly && (
         <footer className="note">
-          <span>Quiet while healthy. Useful when an agent fails.</span>
-          <span>
-            {demoEvents.length} validated events · packet v{demoPacket.version}
-          </span>
+          <span>Quiet while healthy. Ready when an agent fails.</span>
+          <span>validated events · packet v{demoPacket.version}</span>
         </footer>
       )}
     </main>

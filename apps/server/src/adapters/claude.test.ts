@@ -1,6 +1,6 @@
 /**
  * Claude adapter tests — driven against a fixture executable (never the real
- * `claude` CLI). Covers argv, stdin input forwarding, idempotent stop, a missing
+ * `claude` CLI). Covers argv, prompt forwarding, idempotent stop, a missing
  * executable, exit-status mapping, and manifest resume.
  */
 
@@ -20,7 +20,7 @@ function collect(): { events: RelayEvent[]; sink: RelayEventSink } {
   return { events, sink: (e) => events.push(e) };
 }
 const isTerminal = (s: AgentStatus): boolean => s === "exited" || s === "failed";
-async function waitFor(p: () => boolean, ms = 2000): Promise<void> {
+async function waitFor(p: () => boolean, ms = 5000): Promise<void> {
   const end = Date.now() + ms;
   while (!p()) {
     if (Date.now() > end) throw new Error("waitFor timed out");
@@ -49,9 +49,12 @@ test("builds the correct claude argv (with model)", async () => {
   assert.deepEqual(parseArgv(outputText(events)), [
     "-p",
     "--output-format",
-    "json",
+    "text",
+    "--permission-mode",
+    "acceptEdits",
     "--model",
     "claude-opus-4-8",
+    "go",
   ]);
 });
 
@@ -60,18 +63,22 @@ test("omits --model when none is given", async () => {
   const a = new ClaudeAdapter({ executable: FIXTURE });
   await a.start({ sessionId: "s", cwd: process.cwd() }, sink);
   await waitFor(() => isTerminal(a.status()));
-  assert.deepEqual(parseArgv(outputText(events)), ["-p", "--output-format", "json"]);
+  assert.deepEqual(parseArgv(outputText(events)), [
+    "-p",
+    "--output-format",
+    "text",
+    "--permission-mode",
+    "acceptEdits",
+    "",
+  ]);
 });
 
-test("forwards the prompt and sendInput to stdin", async () => {
+test("forwards the prompt as a positional argument", async () => {
   const { events, sink } = collect();
   const a = new ClaudeAdapter({ executable: FIXTURE });
   await a.start({ sessionId: "s", cwd: process.cwd(), prompt: "PROMPT-X" }, sink);
-  a.sendInput("INPUT-Y\n");
   await waitFor(() => isTerminal(a.status()));
-  const out = outputText(events);
-  assert.match(out, /PROMPT-X/); // initial prompt reached stdin
-  assert.match(out, /INPUT-Y/); // sendInput reached stdin
+  assert.equal(parseArgv(outputText(events)).at(-1), "PROMPT-X");
 });
 
 test("every emitted event carries the session id and the claude agent tag", async () => {
@@ -123,7 +130,7 @@ test("exit-status mapping: 0 → exited, non-zero → failed", async () => {
   assert.equal((exit!.payload as { exitCode: number | null }).exitCode, 2);
 });
 
-test("resumes from a manifest by feeding the packet to stdin", async () => {
+test("resumes from a manifest by feeding the packet through the prompt", async () => {
   const manifestPath = path.join(os.tmpdir(), `relay-manifest-${Date.now()}.json`);
   fs.writeFileSync(manifestPath, JSON.stringify({ marker: "RESUME-MARKER-123" }));
   try {
@@ -131,15 +138,18 @@ test("resumes from a manifest by feeding the packet to stdin", async () => {
     const a = new ClaudeAdapter({ executable: FIXTURE });
     await a.start({ sessionId: "s", cwd: process.cwd(), manifestPath }, sink);
     await waitFor(() => isTerminal(a.status()));
-    assert.match(outputText(events), /RESUME-MARKER-123/);
+    assert.match(
+      String(parseArgv(outputText(events)).at(-1)),
+      /RESUME-MARKER-123/
+    );
   } finally {
     fs.unlinkSync(manifestPath);
   }
 });
 
-test("capabilities advertise input + resume", () => {
+test("capabilities advertise one-shot resume", () => {
   const caps = new ClaudeAdapter().capabilities();
   assert.equal(caps.id, "claude");
-  assert.equal(caps.supportsInput, true);
+  assert.equal(caps.supportsInput, false);
   assert.equal(caps.supportsResume, true);
 });

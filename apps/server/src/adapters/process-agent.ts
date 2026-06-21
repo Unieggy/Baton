@@ -158,6 +158,9 @@ export abstract class ProcessAgentAdapter implements AgentAdapter {
   }
 
   sendInput(data: string): void {
+    if (!this.capabilities().supportsInput) {
+      throw new Error(`${this.agent} adapter is one-shot and does not support input.`);
+    }
     if (this.state !== "running" || !this.handle) {
       throw new Error(`Cannot sendInput while status is "${this.state}".`);
     }

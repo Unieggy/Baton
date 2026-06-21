@@ -34,6 +34,7 @@ export const RELAY_EVENT_TYPES = [
   "handoff.failed",
   "test.passed",
   "session.completed",
+  "session.failed",
 ] as const;
 export type RelayEventType = (typeof RELAY_EVENT_TYPES)[number];
 

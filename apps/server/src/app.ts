@@ -20,11 +20,13 @@ import {
   Orchestrator,
   InMemoryEventStore,
   compressorCreateHandoff,
+  fallbackCreateHandoff,
   type EventStore,
 } from "./orchestrator";
 import { ClaudeAdapter, CodexAdapter, FakeAgentAdapter } from "./adapters";
 import { RedisEventStore } from "./event-store";
 import { createApiRouter, type ApiHandler } from "./routes";
+import { completeBundledDemo } from "./demo-workspace";
 
 export interface AppOptions {
   sessions?: SessionManager;
@@ -113,7 +115,8 @@ export function createAppRuntime(
   opts: AppOptions = {}
 ): AppRuntime {
   const sessions = opts.sessions ?? new SessionManager();
-  const broadcaster = opts.broadcaster ?? new SessionBroadcaster();
+  const broadcaster =
+    opts.broadcaster ?? new SessionBroadcaster(env.WEB_URL);
   let store = opts.store ?? null;
   let orchestrator = opts.orchestrator;
 
@@ -131,12 +134,16 @@ export function createAppRuntime(
               id: "claude",
               displayName: "Claude (fake)",
               models: ["claude-opus-4-8"],
+              startupOutput:
+                "migration test failed: duplicate column name: age\n" +
+                "API error 429 — usage limit reached\n",
             }),
           codex: () =>
             new FakeAgentAdapter({
               id: "codex",
               displayName: "Codex (fake)",
               models: ["gpt-5-codex"],
+              onStart: completeBundledDemo,
             }),
         }
       : {
@@ -147,7 +154,10 @@ export function createAppRuntime(
       sessions,
       store,
       adapters,
-      createHandoff: compressorCreateHandoff,
+      // Demo mode must never invoke a real provider merely to distill context.
+      createHandoff: env.RELAY_FAKE_AGENTS
+        ? fallbackCreateHandoff
+        : compressorCreateHandoff,
       // Live events flow to any WS clients subscribed to the session.
       onEvent: (event) => {
         try {

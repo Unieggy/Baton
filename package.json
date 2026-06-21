@@ -13,7 +13,9 @@
     "ui:build": "tsc -p ui/tsconfig.json && vite build --config ui/vite.config.ts",
     "demo": "node scripts/demo.mjs",
     "sidebar": "node scripts/sidebar.mjs",
-    "desktop": "electron electron/main.cjs",
+    "desktop": "node scripts/desktop.mjs",
+    "desktop:real": "RELAY_FAKE_AGENTS=0 node scripts/desktop.mjs",
+    "desktop:shell": "electron electron/main.cjs",
     "demo:redis": "tsx redis-demo.ts",
     "ws:client": "tsx ws-test-client.ts",
     "ws:test": "node --import tsx --test ws-test-client.test.ts"

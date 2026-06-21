@@ -18,6 +18,10 @@ test("loadEnv rejects an out-of-range PORT", () => {
   assert.throws(() => loadEnv({ PORT: "70000" }), /PORT/);
 });
 
+test("loadEnv rejects a non-loopback HOST", () => {
+  assert.throws(() => loadEnv({ HOST: "0.0.0.0" }), /HOST/);
+});
+
 test("loadEnv rejects a malformed WEB_URL", () => {
   assert.throws(() => loadEnv({ WEB_URL: "not-a-url" }), /WEB_URL/);
 });
@@ -32,6 +36,7 @@ test("loadEnv rejects a malformed REDIS_URL", () => {
 
 test("loadEnv applies defaults when vars are absent", () => {
   const env = loadEnv({});
+  assert.equal(env.HOST, "127.0.0.1");
   assert.equal(env.PORT, 4000);
   assert.equal(env.WEB_URL, "http://localhost:3000");
   assert.equal(env.NODE_ENV, "development");

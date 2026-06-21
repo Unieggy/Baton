@@ -46,6 +46,8 @@ export interface Router {
 export interface CompressOptions {
   model: string; // which model performs the compression
   cwd: string; // workspace dir (some backends run as a child process here)
+  /** Optional per-run environment (for provider credentials without globals). */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**

@@ -13,6 +13,10 @@
 import { z } from "zod";
 
 const EnvSchema = z.object({
+  /** Relay controls local processes, so the production server is loopback-only. */
+  HOST: z
+    .enum(["127.0.0.1", "::1", "localhost"])
+    .default("127.0.0.1"),
   /** Port the HTTP server binds to. `0` is allowed so tests can use an
    *  ephemeral port. */
   PORT: z.coerce.number().int().min(0).max(65535).default(4000),

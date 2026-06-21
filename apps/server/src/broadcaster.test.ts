@@ -92,6 +92,18 @@ test("events are isolated per session id", async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
+test("a browser WebSocket from another origin is rejected", async () => {
+  const broadcaster = new SessionBroadcaster("http://127.0.0.1:4173");
+  const { server, url } = await listen(broadcaster);
+  const ws = new WebSocket(url("session-origin"), {
+    origin: "https://attacker.example",
+  });
+
+  await assert.rejects(opened(ws), /Unexpected server response: 400/);
+  assert.equal(broadcaster.clientCount("session-origin"), 0);
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+});
+
 test("a disconnect is cleaned up and does not crash later broadcasts", async () => {
   const broadcaster = new SessionBroadcaster();
   const { server, url } = await listen(broadcaster);

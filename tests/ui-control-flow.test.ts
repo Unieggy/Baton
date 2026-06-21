@@ -74,10 +74,12 @@ test("switchAgent from a fresh session starts the selected initial agent before 
   assert.deepEqual(body(api.calls[1]!), {
     model: "gpt-5-codex",
     prompt: "continue",
+    models: { claude: "claude-sonnet", codex: "gpt-5-codex" },
   });
   assert.deepEqual(body(api.calls[4]!), {
     model: "claude-sonnet",
     prompt: "continue",
+    models: { claude: "claude-sonnet", codex: "gpt-5-codex" },
   });
 });
 
@@ -104,4 +106,39 @@ test("switchAgent skips handoff creation when the packet is already ready", asyn
       "POST /api/sessions/s1/codex/start",
     ]
   );
+});
+
+test("switchAgent forwards both provider keys for automatic continuation", async () => {
+  const api = new FakeApi([
+    { id: "s1", state: "created" },
+    {},
+    { id: "s1", state: "claude_running" },
+    {},
+    {},
+  ]);
+  const apiKeys = { claude: "anthropic-secret", codex: "openai-secret" };
+
+  await switchAgent(api, {
+    sessionId: "s1",
+    initialAgent: "claude",
+    target: "codex",
+    models: { claude: "claude-sonnet", codex: "gpt-5-codex" },
+    prompt: "continue",
+    apiKeys,
+  });
+
+  assert.deepEqual(body(api.calls[1]!), {
+    model: "claude-sonnet",
+    prompt: "continue",
+    apiKey: "anthropic-secret",
+    apiKeys,
+    models: { claude: "claude-sonnet", codex: "gpt-5-codex" },
+  });
+  assert.deepEqual(body(api.calls[4]!), {
+    model: "gpt-5-codex",
+    prompt: "continue",
+    apiKey: "openai-secret",
+    apiKeys,
+    models: { claude: "claude-sonnet", codex: "gpt-5-codex" },
+  });
 });

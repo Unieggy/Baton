@@ -3,8 +3,7 @@
  * ----------------------------------
  * Runs Codex CLI headless via the process runner. Codex takes its prompt as a
  * positional argument and the working directory via `-C`, so the composed prompt
- * (or resumed handoff packet) goes in the argv. `sendInput` still forwards to
- * stdin for parity with the adapter contract.
+ * (or resumed handoff packet) goes in the argv. `codex exec` is one-shot.
  *
  *   codex exec --skip-git-repo-check --json [-m <model>] -C <cwd> <prompt>
  *
@@ -29,7 +28,7 @@ export class CodexAdapter extends ProcessAgentAdapter {
     return {
       id: "codex",
       displayName: "Codex CLI",
-      supportsInput: true,
+      supportsInput: false,
       supportsResume: true,
       models: this.config.models ?? DEFAULT_MODELS,
       contextWindow: 272_000,

@@ -24,6 +24,22 @@ export interface FakeAgentOptions {
   models?: string[];
   supportsInput?: boolean;
   supportsResume?: boolean;
+  /** Optional deterministic workspace action used by the bundled demo. */
+  onStart?: (
+    opts: AgentStartOptions
+  ) =>
+    | FakeWorkspaceChange[]
+    | void
+    | Promise<FakeWorkspaceChange[] | void>;
+  /** Optional delayed output used to exercise automatic runtime triggers. */
+  startupOutput?: string;
+  startupDelayMs?: number;
+}
+
+export interface FakeWorkspaceChange {
+  path: string;
+  additions?: number;
+  deletions?: number;
 }
 
 export class FakeAgentAdapter implements AgentAdapter {
@@ -31,6 +47,10 @@ export class FakeAgentAdapter implements AgentAdapter {
   private sink: RelayEventSink = () => {};
   private sessionId = "";
   private readonly caps: AgentCapabilities;
+  private readonly onStart?: FakeAgentOptions["onStart"];
+  private readonly startupOutput?: string;
+  private readonly startupDelayMs: number;
+  private startupTimer: NodeJS.Timeout | null = null;
 
   /** Inputs received via `sendInput`, exposed for test assertions. */
   readonly received: string[] = [];
@@ -44,6 +64,9 @@ export class FakeAgentAdapter implements AgentAdapter {
       models: opts.models ?? ["fake-1"],
       contextWindow: 200_000,
     };
+    this.onStart = opts.onStart;
+    this.startupOutput = opts.startupOutput;
+    this.startupDelayMs = opts.startupDelayMs ?? 750;
   }
 
   capabilities(): AgentCapabilities {
@@ -65,12 +88,16 @@ export class FakeAgentAdapter implements AgentAdapter {
     this.sink = onEvent;
     this.sessionId = opts.sessionId;
     this.state = "starting";
+    const changes = (await this.onStart?.(opts)) ?? [];
     this.emit("agent.started", {
       provider: this.caps.id,
       model: opts.model ?? this.caps.models[0] ?? "",
       cwd: opts.cwd,
       resumed: Boolean(opts.manifestPath),
     });
+    for (const change of changes) {
+      this.emit("file.changed", { ...change });
+    }
     if (opts.prompt) {
       this.emit("terminal.output", {
         stream: "stdout",
@@ -80,6 +107,17 @@ export class FakeAgentAdapter implements AgentAdapter {
     // A synchronous event sink may request stop() while start() is emitting.
     // Never resurrect an adapter that was stopped during launch.
     if (this.state === "starting") this.state = "running";
+    if (this.state === "running" && this.startupOutput) {
+      this.startupTimer = setTimeout(() => {
+        this.startupTimer = null;
+        if (this.state !== "running") return;
+        this.emit("terminal.output", {
+          stream: "stderr",
+          chunk: this.startupOutput,
+        });
+      }, this.startupDelayMs);
+      this.startupTimer.unref();
+    }
   }
 
   sendInput(data: string): void {
@@ -92,6 +130,10 @@ export class FakeAgentAdapter implements AgentAdapter {
 
   async stop(): Promise<void> {
     if (this.state === "exited") return;
+    if (this.startupTimer) {
+      clearTimeout(this.startupTimer);
+      this.startupTimer = null;
+    }
     const wasLive = this.state === "running" || this.state === "starting";
     this.state = "exited";
     if (wasLive) {

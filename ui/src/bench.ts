@@ -1,7 +1,7 @@
 import { type RelayEvent as RelayEventT } from "../../packages/shared";
 
 /**
- * RelayBench — compares a continuation WITHOUT Relay against one WITH Relay.
+ * BatonBench — compares a continuation WITHOUT Baton against one WITH Baton.
  *
  * Hard rule: record measured values only. Anything we did not actually measure
  * is `null` and renders as "not measured" — never an invented number. We have
@@ -30,7 +30,7 @@ function num(v: unknown): string | null {
   return typeof v === "number" && Number.isFinite(v) ? v.toLocaleString() : null;
 }
 
-/** Derive the measured RelayBench rows from the live event stream + packet. */
+/** Derive the measured BatonBench rows from the live event stream + packet. */
 export function deriveBench(
   events: RelayEventT[],
   packet: { metrics?: { packetTokens?: number } } | null

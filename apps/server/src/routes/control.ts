@@ -28,6 +28,18 @@ const StartBody = z
     model: z.string().optional(),
     prompt: z.string().optional(),
     apiKey: z.string().optional(),
+    apiKeys: z
+      .object({
+        claude: z.string().optional(),
+        codex: z.string().optional(),
+      })
+      .optional(),
+    models: z
+      .object({
+        claude: z.string().optional(),
+        codex: z.string().optional(),
+      })
+      .optional(),
   })
   .default({});
 const InputBody = z.object({ data: z.string().min(1, "data is required") });
