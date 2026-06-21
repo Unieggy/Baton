@@ -127,20 +127,21 @@ test("a handoff-builder failure leaves the session in failed, not stuck", async 
   assert.equal(sessions.get(s.id).state, "failed");
 });
 
-test("rate-limit output emits limit.detected and automatically builds a handoff", async () => {
+test("rate-limit output automatically hands off and resumes the target", async () => {
   const { orch, sessions, store, broadcast } = makeOrchestrator();
   const s = newSession(sessions);
   await orch.startClaude(s.id);
 
   orch.sendInput(s.id, "API error 429 rate limit reached\n");
 
-  await waitFor(() => sessions.get(s.id).state === "handoff_ready");
+  await waitFor(() => sessions.get(s.id).state === "codex_running");
   const packet = await store.loadHandoff(s.id);
   assert.equal(packet?.trigger, "rate_limit");
   assert.ok(broadcast.some((e) => e.type === "limit.detected"));
+  assert.ok(broadcast.some((e) => e.type === "agent.switched"));
 });
 
-test("context pressure emits limit.detected and automatically builds a handoff", async () => {
+test("context pressure automatically hands off and resumes the target", async () => {
   const { orch, sessions, store, broadcast } = makeOrchestrator({
     contextPressureThreshold: 0,
   });
@@ -149,7 +150,7 @@ test("context pressure emits limit.detected and automatically builds a handoff",
 
   orch.sendInput(s.id, "any output trips the zero threshold\n");
 
-  await waitFor(() => sessions.get(s.id).state === "handoff_ready");
+  await waitFor(() => sessions.get(s.id).state === "codex_running");
   const packet = await store.loadHandoff(s.id);
   assert.equal(packet?.trigger, "context_full");
   assert.ok(
@@ -157,6 +158,46 @@ test("context pressure emits limit.detected and automatically builds a handoff",
       (e) => e.type === "limit.detected" && e.payload.reason === "context_full"
     )
   );
+  assert.ok(broadcast.some((e) => e.type === "agent.switched"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(
+    broadcast.filter((event) => event.type === "agent.switched").length,
+    1,
+    "automatic handoff must not ping-pong between providers"
+  );
+});
+
+test("Claude can verify directly without a handoff", async () => {
+  const { orch, sessions } = makeOrchestrator();
+  const s = newSession(sessions);
+  await orch.startClaude(s.id);
+
+  const result = await orch.verify(s.id);
+  assert.equal(result.passed, true);
+  assert.equal(sessions.get(s.id).state, "completed");
+});
+
+test("a rejected duplicate start keeps the original live adapter", async () => {
+  const sessions = new SessionManager();
+  const first = new FakeAgentAdapter({ id: "claude" });
+  const second = new FakeAgentAdapter({ id: "claude" });
+  let starts = 0;
+  const orch = new Orchestrator({
+    sessions,
+    store: new InMemoryEventStore(),
+    adapters: {
+      claude: () => (starts++ === 0 ? first : second),
+      codex: () => new FakeAgentAdapter({ id: "codex" }),
+    },
+    createHandoff: fallbackCreateHandoff,
+  });
+  const s = newSession(sessions);
+  await orch.startClaude(s.id);
+
+  await assert.rejects(() => orch.startClaude(s.id), /No handoff packet saved/);
+  orch.sendInput(s.id, "still alive");
+  assert.deepEqual(first.received, ["still alive"]);
+  assert.deepEqual(second.received, []);
 });
 
 test("getDiff returns git facts for the workspace", async () => {

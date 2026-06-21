@@ -1,4 +1,8 @@
-import { type RelayEvent as RelayEventT } from "../../packages/shared";
+import {
+  HandoffPacket,
+  type HandoffPacket as HandoffPacketT,
+  type RelayEvent as RelayEventT,
+} from "../../packages/shared";
 
 export type Phase = "working" | "switching" | "resumed";
 export type LineKind = "plain" | "muted" | "prompt" | "pass" | "fail" | "relay";
@@ -158,6 +162,19 @@ export function derivePhase(events: RelayEventT[]): Phase {
 /** Whether a validated handoff packet has been produced. */
 export function packetReady(events: RelayEventT[]): boolean {
   return events.some((e) => e.type === "handoff.created");
+}
+
+/** Latest complete packet carried by a handoff.created event, when available. */
+export function latestHandoffPacket(
+  events: RelayEventT[]
+): HandoffPacketT | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]!;
+    if (event.type !== "handoff.created") continue;
+    const parsed = HandoffPacket.safeParse(event.payload.packet);
+    if (parsed.success) return parsed.data;
+  }
+  return null;
 }
 
 /** Migration/test verification state from the latest relevant test event. */
