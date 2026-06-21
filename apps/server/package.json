@@ -1,0 +1,13 @@
+{
+  "name": "@relay/server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Relay orchestration server (Node + TypeScript).",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test src/**/*.test.ts"
+  }
+}
