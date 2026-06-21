@@ -1,0 +1,4 @@
+Error: SQLITE_ERROR: duplicate column name: age
+    at Database.run (migrate.ts:8)
+    at applyMigration (migrate.ts:8)
+Session aborted: 429 rate limit hit on retry
