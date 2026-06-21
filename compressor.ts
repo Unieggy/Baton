@@ -98,7 +98,7 @@ interface HandoffTask {
   next_action: string; // the single concrete next step
 }
 
-interface HandoffManifest {
+export interface HandoffManifest {
   target_model: string;
   task: HandoffTask;
   focus_files: FocusFile[]; // the curated index that prevents whole-repo exploration
@@ -120,13 +120,18 @@ interface HandoffManifest {
  * crash trace. The stderr is compressor-only: it's the freeze-time artifact the
  * monitor has no reason to track, so it's read here, not in the shared module.
  */
-function extractWorkspaceState(): WorkspaceState {
-  const snapshot = captureWorkspace(WORKSPACE_DIR);
+function extractWorkspaceState(workspaceDir: string = WORKSPACE_DIR): WorkspaceState {
+  const snapshot = captureWorkspace(workspaceDir);
 
   // Stderr (mocked from disk for this harness) — the terminal crash trace.
+  // Derived from the workspace so the orchestrator can point it at any dir.
+  const stderrFile =
+    workspaceDir === WORKSPACE_DIR
+      ? MOCK_STDERR_FILE
+      : path.join(workspaceDir, "mock-stderr.log");
   let stderrTrace = "(no stderr captured)";
-  if (fs.existsSync(MOCK_STDERR_FILE)) {
-    stderrTrace = fs.readFileSync(MOCK_STDERR_FILE, "utf-8").trim();
+  if (fs.existsSync(stderrFile)) {
+    stderrTrace = fs.readFileSync(stderrFile, "utf-8").trim();
   }
 
   return {
@@ -144,14 +149,17 @@ function extractWorkspaceState(): WorkspaceState {
  * Build the strict compression prompt. We are explicit about output shape so
  * the scrubber has the best chance of finding a single clean JSON object.
  */
-function assemblePrompt(state: WorkspaceState): string {
+function assemblePrompt(
+  state: WorkspaceState,
+  targetModel: string = TARGET_MODEL
+): string {
   return `You are RelayIDE's context compressor. A coding session crashed or hit a rate limit mid-task. Below is the raw workspace state. Analyse the failure and produce a compressed handoff for a FRESH agent that must resume the work in the SAME workspace.
 
 The fresh agent still has the full repo on disk — it can run git, read files, and grep anytime. So do NOT restate file contents or the diff. Instead, capture only what it CANNOT recover from disk: the intent, the progress so far, the decisions already made and why, the rules it must respect, and a curated pointer to the few files that matter (so it does not have to explore the whole repo).
 
 Respond with ONE JSON object and NOTHING ELSE — no prose, no markdown fences. Use EXACTLY this shape:
 {
-  "target_model": "${TARGET_MODEL}",
+  "target_model": "${targetModel}",
   "task": {
     "goal": "string — the objective, 1-3 sentences, enough to resume cold",
     "status": "in_progress | blocked",
@@ -279,45 +287,83 @@ function scrubJson(raw: string): HandoffManifest {
 // Step 5 — Output
 // ---------------------------------------------------------------------------
 
-function writeHandoff(manifest: HandoffManifest): void {
-  fs.writeFileSync(HANDOFF_FILE, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
+function writeHandoff(
+  manifest: HandoffManifest,
+  handoffFile: string = HANDOFF_FILE
+): void {
+  fs.writeFileSync(handoffFile, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
 }
 
 // ---------------------------------------------------------------------------
-// Orchestrator
+// Library entrypoint — the full pipeline as one call
+// ---------------------------------------------------------------------------
+
+export interface CompressionRequest {
+  /** Workspace to analyse. Defaults to the module's WORKSPACE_DIR (CWD/argv). */
+  workspaceDir?: string;
+  /**
+   * Which provider performs the summarization. The orchestrator injects a
+   * backend from a provider that is currently UP — the primary may be the very
+   * thing that's rate-limited. Defaults to the env-selected backend.
+   */
+  backend?: CompressBackend;
+  /** Model the backend uses to compress. Defaults to COMPRESSOR_MODEL. */
+  compressorModel?: string;
+  /** Model label written into the manifest for the resuming session. */
+  targetModel?: string;
+  /** Where to persist the manifest. Defaults to <workspace>/.relay_handoff.json. */
+  handoffPath?: string;
+}
+
+/**
+ * Run the whole compression pipeline (extract → assemble → compress → scrub →
+ * write) and return the validated manifest. This is the seam the orchestrator
+ * calls at freeze time; the CLI `main()` below is just a thin wrapper over it.
+ */
+export async function runCompression(
+  req: CompressionRequest = {}
+): Promise<HandoffManifest> {
+  const workspaceDir = req.workspaceDir
+    ? path.resolve(req.workspaceDir)
+    : WORKSPACE_DIR;
+  const backend = req.backend ?? COMPRESS_BACKEND;
+  const compressorModel = req.compressorModel ?? COMPRESSOR_MODEL;
+  const targetModel = req.targetModel ?? TARGET_MODEL;
+  const handoffPath =
+    req.handoffPath ?? path.join(workspaceDir, ".relay_handoff.json");
+
+  const state = extractWorkspaceState(workspaceDir);
+  const prompt = assemblePrompt(state, targetModel);
+  const rawReply = await backend(prompt, {
+    model: compressorModel,
+    cwd: workspaceDir,
+  });
+  const manifest = scrubJson(rawReply);
+  writeHandoff(manifest, handoffPath);
+  return manifest;
+}
+
+// ---------------------------------------------------------------------------
+// CLI — `npx tsx compressor.ts [workspaceDir]`
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
   console.log(`[relay] workspace : ${WORKSPACE_DIR}`);
-
-  console.log("[relay] step 1 — extracting workspace state…");
-  const state = extractWorkspaceState();
   console.log(
-    `[relay]   diff: ${state.gitDiff.length}b | skeleton: ${state.codeSkeleton.length}b | stderr: ${state.stderrTrace.length}b`
+    `[relay] compressing via ${COMPRESS_BACKEND_NAME} (${COMPRESSOR_MODEL})…`
   );
 
-  console.log("[relay] step 2 — assembling prompt…");
-  const prompt = assemblePrompt(state);
-
-  console.log(
-    `[relay] step 3 — compressing via ${COMPRESS_BACKEND_NAME} (${COMPRESSOR_MODEL})…`
-  );
-  const rawReply = await COMPRESS_BACKEND(prompt, {
-    model: COMPRESSOR_MODEL,
-    cwd: WORKSPACE_DIR,
-  });
-
-  console.log("[relay] step 4 — scrubbing JSON…");
-  const manifest = scrubJson(rawReply);
-
-  console.log("[relay] step 5 — writing handoff…");
-  writeHandoff(manifest);
+  const manifest = await runCompression();
 
   console.log(`\n[relay] ✅ wrote ${HANDOFF_FILE}\n`);
   console.log(JSON.stringify(manifest, null, 2));
 }
 
-main().catch((err) => {
-  console.error("\n[relay] ❌ compression failed:\n", err.message || err);
-  process.exit(1);
-});
+// Only run the pipeline when invoked directly — importing this module (e.g. from
+// the orchestrator) must NOT kick off a compression as a side effect.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("\n[relay] ❌ compression failed:\n", err.message || err);
+    process.exit(1);
+  });
+}
