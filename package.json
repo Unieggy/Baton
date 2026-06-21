@@ -10,7 +10,8 @@
     "test": "node --import tsx --test tests/*.test.ts && node --import tsx test-detection.ts && npm test --workspaces --if-present",
     "typecheck": "tsc --noEmit && npm run typecheck --workspaces --if-present",
     "ui:dev": "vite --config ui/vite.config.ts",
-    "ui:build": "tsc -p ui/tsconfig.json && vite build --config ui/vite.config.ts"
+    "ui:build": "tsc -p ui/tsconfig.json && vite build --config ui/vite.config.ts",
+    "demo:redis": "tsx redis-demo.ts"
   },
   "keywords": [],
   "author": "",
@@ -27,6 +28,7 @@
     "vite": "^8.0.16"
   },
   "dependencies": {
+    "ioredis": "^5.11.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "zod": "^4.4.3"
