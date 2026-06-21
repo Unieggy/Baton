@@ -171,6 +171,7 @@ function Rail({
   taskGoal,
   packet,
   bench,
+  verifyLabel,
 }: {
   phase: Phase;
   handoffDone: boolean;
@@ -183,6 +184,7 @@ function Rail({
   taskGoal: string;
   packet: HandoffPacket | null;
   bench: BenchRow[];
+  verifyLabel: string;
 }) {
   const isCodex = agentName ? agentName === "codex" : phase === "resumed";
   const agent = isCodex
@@ -251,12 +253,6 @@ function Rail({
         <div className="block verify">
           <small>VERIFICATION</small>
           <div className="check">
-            <span className="ok">
-              <Icon name="check" size={12} />
-            </span>
-            TypeScript
-          </div>
-          <div className="check">
             <span
               className={
                 migration === "pending" ? "pending" : migrationOk ? "ok" : "bad"
@@ -273,7 +269,14 @@ function Rail({
                 size={12}
               />
             </span>
-            Migration test
+            <code className="check-cmd">{verifyLabel}</code>
+            <b className={`check-state ${migration ?? (migrationOk ? "pass" : "fail")}`}>
+              {migration === "pending"
+                ? "pending"
+                : migrationOk
+                  ? "pass"
+                  : "fail"}
+            </b>
           </div>
         </div>
 
@@ -733,6 +736,7 @@ export function App() {
           taskGoal={goal}
           packet={packet}
           bench={bench}
+          verifyLabel={verificationCommand}
         />
       </div>
       {!config.railOnly && (
