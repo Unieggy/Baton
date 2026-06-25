@@ -4,8 +4,8 @@
  * Starts the local server + Vite UI, waits until both are ready, then opens the
  * Electron rail. One Ctrl-C (or closing Electron) shuts the whole stack down.
  *
- *   npm run desktop          # deterministic fake-agent demo
- *   npm run desktop:real     # authenticated Claude/Codex subscription CLIs
+ *   npm run desktop                      # the app — real Claude/Codex in a PTY
+ *   RELAY_FAKE_AGENTS=1 npm run desktop  # safe fake-agent demo (no auth)
  */
 
 import { spawn, spawnSync } from "node:child_process";
@@ -15,7 +15,7 @@ const WEB_PORT = process.env.WEB_PORT ?? "4173";
 const API = `http://127.0.0.1:${API_PORT}`;
 const UI = `http://127.0.0.1:${WEB_PORT}`;
 const WS = `ws://127.0.0.1:${API_PORT}`;
-const fake = process.env.RELAY_FAKE_AGENTS ?? "1";
+const fake = process.env.RELAY_FAKE_AGENTS ?? "0";
 const children = new Set();
 let shuttingDown = false;
 

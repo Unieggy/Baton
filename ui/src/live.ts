@@ -311,3 +311,231 @@ export function currentActivity(
   }
   return fallback;
 }
+
+// ---------------------------------------------------------------------------
+// Chat projection — the single continuous timeline (the "single-chat illusion")
+// ---------------------------------------------------------------------------
+
+export type ChatRole = "agent" | "system" | "you";
+export type ChatKind = "output" | "info" | "good" | "bad" | "relay";
+
+export interface ChatItem {
+  id: string;
+  role: ChatRole;
+  agent?: "claude" | "codex";
+  kind: ChatKind;
+  text: string;
+  /** Event-index anchor — lets locally-tracked user messages interleave. */
+  seq: number;
+}
+
+/** Best-effort attribution of a single event to an agent. */
+function eventAgent(e: RelayEventT): "claude" | "codex" | undefined {
+  if (e.agent === "claude" || e.agent === "codex") return e.agent;
+  return (
+    provider(e.payload, "to") ??
+    provider(e.payload, "target") ??
+    provider(e.payload, "provider")
+  );
+}
+
+/** Strip ANSI, normalize newlines, collapse blank runs — for chat bubbles. */
+function cleanBlock(text: string): string {
+  return text
+    .replace(/\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.replace(/\s+$/, ""))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** Render a lifecycle event as a compact inline system divider, or null. */
+function systemItem(e: RelayEventT): { kind: ChatKind; text: string } | null {
+  const p = e.payload;
+  switch (e.type) {
+    case "limit.detected": {
+      const reason = (s(p, "reason") ?? "limit").replace(/_/g, " ");
+      return { kind: "bad", text: `Usage limit reached (${reason}) — relaying` };
+    }
+    case "agent.switched": {
+      const from = provider(p, "from") ?? "claude";
+      const to = provider(p, "to") ?? "codex";
+      return { kind: "relay", text: `Baton relayed ${cap(from)} → ${cap(to)}` };
+    }
+    case "file.changed":
+      return { kind: "info", text: `± ${s(p, "path") ?? "a file"}` };
+    case "test.passed":
+      return { kind: "good", text: `Verified — ${s(p, "command") ?? "tests"} passed` };
+    case "test.failed":
+      return { kind: "bad", text: `Verification failed — ${s(p, "command") ?? "tests"}` };
+    case "session.completed":
+      return { kind: "good", text: "Task complete — verification passed" };
+    case "session.failed":
+      return { kind: "bad", text: `Session failed${s(p, "error") ? ` — ${s(p, "error")}` : ""}` };
+    case "handoff.failed":
+      return { kind: "bad", text: `Handoff failed${s(p, "error") ? ` — ${s(p, "error")}` : ""}` };
+    default:
+      return null;
+  }
+}
+
+function cap(agent: string): string {
+  return agent === "codex" ? "Codex" : "Claude";
+}
+
+/**
+ * Fold the event stream into one continuous, attributed chat timeline. Agent
+ * stdout/stderr is aggregated into bubbles; lifecycle events become compact
+ * system dividers — so a handoff reads as one conversation, not two windows.
+ */
+export function projectChat(events: RelayEventT[]): ChatItem[] {
+  const items: ChatItem[] = [];
+  let current: "claude" | "codex" = "claude";
+  let buffer: string[] = [];
+  let bufferAgent: "claude" | "codex" = current;
+  let bufferId = "";
+  let bufferSeq = 0;
+
+  const flush = (): void => {
+    if (!buffer.length) return;
+    const text = cleanBlock(buffer.join(""));
+    buffer = [];
+    if (text) {
+      items.push({
+        id: bufferId,
+        role: "agent",
+        agent: bufferAgent,
+        kind: "output",
+        text,
+        seq: bufferSeq,
+      });
+    }
+  };
+
+  events.forEach((e, i) => {
+    const ag = eventAgent(e);
+    if (ag && ag !== current) {
+      flush();
+      current = ag;
+    }
+    if (e.type === "terminal.output") {
+      const text = s(e.payload, "chunk") ?? s(e.payload, "message") ?? s(e.payload, "line") ?? "";
+      if (!buffer.length) {
+        bufferAgent = current;
+        bufferId = e.id;
+      }
+      buffer.push(text);
+      bufferSeq = i;
+      return;
+    }
+    const sys = systemItem(e);
+    if (sys) {
+      flush();
+      items.push({ id: e.id, role: "system", kind: sys.kind, text: sys.text, seq: i });
+    }
+  });
+  flush();
+  return items;
+}
+
+// ---------------------------------------------------------------------------
+// Ambient telemetry — monochrome status + meters derived from the same stream
+// ---------------------------------------------------------------------------
+
+export type StatusTone = "active" | "relay" | "good" | "bad" | "idle";
+export interface StatusTag {
+  text: string;
+  tone: StatusTone;
+}
+
+/** The corner status label, e.g. `STATUS: CLAUDE_ACTIVE` / `HANDOFF: RELAYING`. */
+export function statusLabel(
+  events: RelayEventT[],
+  phase: Phase,
+  live: boolean
+): StatusTag {
+  if (!live) return { text: "STATUS: STANDBY", tone: "idle" };
+  if (events.some((e) => e.type === "session.completed"))
+    return { text: "STATUS: VERIFIED", tone: "good" };
+  if (events.some((e) => e.type === "session.failed" || e.type === "handoff.failed"))
+    return { text: "STATUS: FAILED", tone: "bad" };
+  if (phase === "switching") return { text: "HANDOFF: RELAYING", tone: "relay" };
+  const a = activeAgent(events);
+  return {
+    text: `STATUS: ${a === "codex" ? "CODEX" : "CLAUDE"}_ACTIVE`,
+    tone: "active",
+  };
+}
+
+export interface ContextUsage {
+  tokens: number;
+  window: number;
+  pct: number;
+}
+
+/**
+ * Best-effort context-window meter. An explicit token signal wins
+ * (`limit.detected` / `handoff.distilling`); otherwise estimate from output
+ * volume since the active agent's latest (re)launch — mirrors the orchestrator's
+ * chars/4 approximation. No backend telemetry event required.
+ */
+export function contextUsage(
+  events: RelayEventT[],
+  agent: "claude" | "codex"
+): ContextUsage {
+  const window = agent === "codex" ? 272_000 : 200_000;
+
+  let explicit: number | undefined;
+  for (let i = events.length - 1; i >= 0 && explicit === undefined; i--) {
+    const e = events[i]!;
+    if (e.type === "limit.detected") explicit = metric(e.payload, "tokens");
+    else if (e.type === "handoff.distilling") explicit = metric(e.payload, "sourceTokens");
+  }
+
+  let tokens = explicit;
+  if (tokens === undefined) {
+    let start = 0;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const t = events[i]!.type;
+      if (
+        t === "agent.launching" ||
+        t === "agent.started" ||
+        t === "agent.switched" ||
+        t === "session.started"
+      ) {
+        start = i;
+        break;
+      }
+    }
+    let chars = 0;
+    for (let i = start; i < events.length; i++) {
+      const e = events[i]!;
+      if (e.type === "terminal.output") {
+        chars += (s(e.payload, "chunk") ?? s(e.payload, "message") ?? s(e.payload, "line") ?? "").length;
+      }
+    }
+    tokens = Math.ceil(chars / 4);
+  }
+
+  const pct = window > 0 ? Math.min(1, tokens / window) : 0;
+  return { tokens, window, pct };
+}
+
+/** Rate-limit state: limited after a rate_limit trigger until the next relay. */
+export function rateState(events: RelayEventT[]): "ok" | "limited" {
+  let limitedAt = -1;
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i]!;
+    if (e.type === "limit.detected" && s(e.payload, "reason") === "rate_limit") {
+      limitedAt = i;
+    } else if (
+      limitedAt >= 0 &&
+      (e.type === "agent.switched" || e.type === "session.completed")
+    ) {
+      limitedAt = -1;
+    }
+  }
+  return limitedAt >= 0 ? "limited" : "ok";
+}

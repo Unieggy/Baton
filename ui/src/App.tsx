@@ -1,20 +1,18 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { demoPacket } from "./demo";
-import { useRelayStream } from "./useRelayStream";
-import { deriveBench, type BenchRow } from "./bench";
+import { useSessionTerminal } from "./useSessionTerminal";
+import { deriveBench } from "./bench";
 import {
   activeAgent,
-  activeSupportsInput,
+  contextUsage,
   currentActivity,
   derivePhase,
-  eventLine,
   latestHandoffPacket,
   migrationState,
-  packetReady,
-  type Line,
+  rateState,
+  statusLabel,
   type Phase,
 } from "./live";
-import type { HandoffPacket } from "../../packages/shared";
 import {
   agentLabel,
   createSession as createRelaySession,
@@ -25,23 +23,17 @@ import {
   type RelayApi,
 } from "./controlFlow";
 
-type IconName = "arrow" | "check" | "cross" | "spark" | "shield" | "file";
+type IconName = "arrow" | "check" | "cross" | "spark" | "relay";
 
 const icons: Record<IconName, ReactNode> = {
   arrow: <path d="M5 12h13m-5-6 6 6-6 6" />,
   check: <path d="m5 12 4 4L19 6" />,
   cross: <path d="M6 6l12 12M18 6 6 18" />,
   spark: <path d="m12 3 1.2 5L18 9l-4.8 1L12 15l-1.2-5L6 9l4.8-1z" />,
-  shield: (
+  relay: (
     <>
-      <path d="M12 3 5 6v5c0 5 3 8 7 10 4-2 7-5 7-10V6z" />
-      <path d="m9 12 2 2 4-4" />
-    </>
-  ),
-  file: (
-    <>
-      <path d="M6 3h8l4 4v14H6z" />
-      <path d="M14 3v5h5" />
+      <path d="M4 8h11l-3-3m3 3-3 3" />
+      <path d="M20 16H9l3 3m-3-3 3-3" />
     </>
   ),
 };
@@ -64,325 +56,110 @@ function Icon({ name, size = 14 }: { name: IconName; size?: number }) {
   );
 }
 
-/** Claude's sunburst mark in its brand clay/orange. */
-function ClaudeMark({ size = 22 }: { size?: number }) {
-  const rays = Array.from({ length: 12 }, (_, i) => (i * 360) / 12);
+function BatonMark({ size = 16 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
-      <g stroke="#d97757" strokeWidth="2.1" strokeLinecap="round">
-        {rays.map((deg) => (
-          <line
-            key={deg}
-            x1="12"
-            y1="12"
-            x2="12"
-            y2="3.5"
-            transform={`rotate(${deg} 12 12)`}
-          />
-        ))}
-      </g>
-    </svg>
-  );
-}
-
-function BatonMark({ size = 18 }: { size?: number }) {
-  return (
-    <span
-      className="baton-mark"
-      style={{ width: size, height: size }}
-      aria-hidden="true"
-    >
+    <span className="baton-mark" style={{ width: size, height: size }} aria-hidden="true">
       <i />
     </span>
   );
 }
 
-const readyLines: Line[] = [
-  { kind: "relay", value: "↪ baton: control tower ready" },
-  { kind: "muted", value: "Choose a workspace and starting agent, then start Baton." },
-];
+// ---------------------------------------------------------------------------
+// Ambient telemetry — monochrome meters, always visible while live
+// ---------------------------------------------------------------------------
 
-function Terminal({
-  lines,
+function Telemetry({
   phase,
-  interactive = false,
-  onInput,
-}: {
-  lines: Line[];
-  phase: Phase;
-  interactive?: boolean;
-  onInput?: (text: string) => void;
-}) {
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [draft, setDraft] = useState("");
-
-  useEffect(() => {
-    const el = bodyRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [lines, interactive]);
-
-  function submit(event: FormEvent): void {
-    event.preventDefault();
-    const text = draft.trim();
-    if (!text || !onInput) return;
-    onInput(text);
-    setDraft("");
-  }
-
-  return (
-    <section className="terminal" aria-label="Live terminal">
-      <header className="terminal-bar">
-        <span className="lights">
-          <i />
-          <i />
-          <i />
-        </span>
-        <span className="terminal-title">baton — zsh</span>
-        <span className="terminal-branch">baton session</span>
-      </header>
-      <div
-        className="terminal-body"
-        ref={bodyRef}
-        onClick={() => inputRef.current?.focus()}
-      >
-        {lines.map((line, i) => (
-          <div className={`line ${line.kind}`} key={i}>
-            {line.value || " "}
-          </div>
-        ))}
-        {interactive ? (
-          <form className="term-input" onSubmit={submit}>
-            <span className="term-caret">$</span>
-            <input
-              ref={inputRef}
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              placeholder="type to message the active agent…"
-              spellCheck={false}
-              autoComplete="off"
-              autoFocus
-            />
-          </form>
-        ) : (
-          phase !== "switching" && <span className="cursor" />
-        )}
-      </div>
-    </section>
-  );
-}
-
-function Rail({
-  phase,
-  handoffDone,
-  live = false,
-  agentName,
+  tokens,
+  window,
+  pct,
+  rate,
   migration,
-  sessionLabel = "session 7f3a",
-  controls,
-  activity,
-  activityLabel = "NOW",
-  packet,
+  verifyCommand,
+  onVerify,
+  verifyDisabled,
   bench,
-  verifyLabel,
-  verifyEditable = false,
-  onVerifyChange,
-  failed = false,
-  completed = false,
 }: {
   phase: Phase;
-  handoffDone: boolean;
-  live?: boolean;
-  agentName?: "claude" | "codex";
-  migration?: "pass" | "fail" | "pending";
-  sessionLabel?: string;
-  controls?: ReactNode;
-  activity: string;
-  activityLabel?: string;
-  packet: HandoffPacket | null;
-  bench: BenchRow[];
-  verifyLabel: string;
-  verifyEditable?: boolean;
-  onVerifyChange?: (value: string) => void;
-  failed?: boolean;
-  completed?: boolean;
+  tokens: number;
+  window: number;
+  pct: number;
+  rate: "ok" | "limited";
+  migration: "pass" | "fail" | "pending";
+  verifyCommand: string;
+  onVerify: () => void;
+  verifyDisabled: boolean;
+  bench: ReturnType<typeof deriveBench>;
 }) {
-  const isCodex = agentName ? agentName === "codex" : phase === "resumed";
-  const agent = isCodex
-    ? { name: "Codex", letter: "X", tone: "codex" }
-    : { name: "Claude", letter: "C", tone: "claude" };
-
-  const status =
-    failed
-      ? "failed"
-      : completed
-        ? "completed"
-        : !live
-          ? "ready"
-          : phase === "switching"
-            ? "relaying context…"
-      : phase === "resumed"
-        ? "resumed · working"
-        : "running";
-
-  // Verification: explicit override in live mode, else derived from phase.
-  const migrationOk = migration ? migration === "pass" : phase === "resumed";
+  const k = (n: number): string =>
+    n >= 1000 ? `${Math.round(n / 100) / 10}k` : `${n}`;
+  const meterTone = pct >= 0.85 ? "hot" : pct >= 0.6 ? "warm" : "";
 
   return (
-    <aside className="rail" aria-label="Baton">
-      <header className="rail-head">
-        <BatonMark />
-        <strong>Baton</strong>
-        <span className="session">{sessionLabel}</span>
-      </header>
-
-      <div className="rail-body">
-        <div className="agent">
-          <span className={`glyph ${agent.tone} ${phase}`}>
-            {isCodex ? agent.letter : <ClaudeMark size={22} />}
-          </span>
-          <div>
-            <small>ACTIVE AGENT</small>
-            <strong>{agent.name}</strong>
-            <span
-              className={`status ${failed ? "failed" : completed ? "completed" : phase}`}
-            >
-              {status}
-            </span>
-          </div>
-        </div>
-
-        <section className="handoff-chain" aria-label="Handoff chain">
-          <small>HANDOFF CHAIN</small>
-          <div className={`chain-track ${phase}`}>
-            <span className={`chain-node source ${!isCodex ? "active" : "done"}`} />
-            <span className={`chain-node next ${phase !== "working" ? "active" : ""}`} />
-            <span className={`chain-node finish ${completed ? "active" : ""}`} />
-          </div>
-          <div className="chain-labels">
-            <span>{isCodex ? "Claude" : agent.name}</span>
-            <span>{isCodex ? "Codex" : "next agent"}</span>
-            <span>finish</span>
-          </div>
-          <p>
-            <strong>{agent.name}</strong> holds the baton. Context, diffs, and
-            failure memory travel with the handoff; <code>{verifyLabel}</code>{" "}
-            decides when the work is done.
-          </p>
-        </section>
-
-        <div className="block activity">
-          <small>{activityLabel}</small>
-          <p title={activity}>{activity}</p>
-        </div>
-
-        <div
-          className={`packet ${handoffDone ? "shown" : ""}`}
-          aria-hidden={!handoffDone}
-        >
-          <div className="packet-top">
-            <span>
-              {packet?.sourceAgent === "codex" ? "Codex" : "Claude"}{" "}
-              <Icon name="arrow" size={12} />{" "}
-              {packet?.targetAgent === "claude" ? "Claude" : "Codex"}
-            </span>
-            <b>−{Math.round(packet?.metrics.reductionPercent ?? 93)}%</b>
-          </div>
-          <div className="packet-meta">
-            <span>
-              <Icon name="file" size={12} />{" "}
-              {packet?.evidence.changedFiles.length ?? 2} files
-            </span>
-            <span>
-              <Icon name="spark" size={12} />{" "}
-              {(packet?.metrics.packetTokens ?? 1218).toLocaleString()} tok
-            </span>
-            <span>
-              <Icon name="shield" size={12} /> memory kept
-            </span>
-          </div>
-        </div>
-
-        <div className="block verify">
-          <small>VERIFICATION</small>
-          {verifyEditable ? (
-            <input
-              className="verify-input"
-              value={verifyLabel}
-              onChange={(event) => onVerifyChange?.(event.target.value)}
-              placeholder="verification command (e.g. npm test)"
-            />
-          ) : (
-            <div className="check">
-              <span
-                className={
-                  migration === "pending"
-                    ? "pending"
-                    : migrationOk
-                      ? "ok"
-                      : "bad"
-                }
-              >
-                <Icon
-                  name={
-                    migration === "pending"
-                      ? "spark"
-                      : migrationOk
-                        ? "check"
-                        : "cross"
-                  }
-                  size={12}
-                />
-              </span>
-              <code className="check-cmd">{verifyLabel}</code>
-              <b
-                className={`check-state ${migration ?? (migrationOk ? "pass" : "fail")}`}
-              >
-                {migration === "pending"
-                  ? "pending"
-                  : migrationOk
-                    ? "pass"
-                    : "fail"}
-              </b>
-            </div>
-          )}
-        </div>
-
-        <details className="bench">
-          <summary>BatonBench</summary>
-          <table className="bench-table">
-            <thead>
-              <tr>
-                <th></th>
-                <th>No Baton</th>
-                <th>Baton</th>
-              </tr>
-            </thead>
-            <tbody>
-              {bench.map((row) => (
-                <tr key={row.label}>
-                  <td>{row.label}</td>
-                  <td className={row.without == null ? "nm" : ""}>
-                    {row.without ?? "not measured"}
-                  </td>
-                  <td className={row.withRelay == null ? "nm" : "val"}>
-                    {row.withRelay ?? "not measured"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </details>
-
-        {controls}
+    <div className="telemetry">
+      <div className="tel-row">
+        <span className="tel-key">CONTEXT</span>
+        <span className={`meter ${meterTone}`}>
+          <span className="meter-fill" style={{ width: `${Math.round(pct * 100)}%` }} />
+        </span>
+        <span className="tel-val">
+          {Math.round(pct * 100)}% · {k(tokens)}/{k(window)}
+        </span>
       </div>
 
-    </aside>
+      <div className="tel-row split">
+        <span className="tel-key">RATE</span>
+        <span className={`tel-state ${rate}`}>{rate === "limited" ? "LIMITED" : "OK"}</span>
+        <span className="tel-key">CHAIN</span>
+        <span className={`chain ${phase}`}>
+          <i className="dot done" />
+          <i className={`bar ${phase !== "working" ? "on" : ""}`} />
+          <i className={`dot ${phase !== "working" ? "on" : ""}`} />
+          <i className={`bar ${phase === "resumed" ? "on" : ""}`} />
+          <i className={`dot ${phase === "resumed" ? "on" : ""}`} />
+        </span>
+      </div>
+
+      <div className="tel-row split">
+        <span className="tel-key">VERIFY</span>
+        <code className="tel-cmd" title={verifyCommand}>{verifyCommand}</code>
+        <span className={`tel-state ${migration}`}>{migration.toUpperCase()}</span>
+        <button className="tel-run" onClick={onVerify} disabled={verifyDisabled}>
+          run
+        </button>
+      </div>
+
+      <details className="bench">
+        <summary>BatonBench</summary>
+        <table className="bench-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th>No Baton</th>
+              <th>Baton</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bench.map((row) => (
+              <tr key={row.label}>
+                <td>{row.label}</td>
+                <td className={row.without == null ? "nm" : ""}>{row.without ?? "—"}</td>
+                <td className={row.withRelay == null ? "nm" : "val"}>
+                  {row.withRelay ?? "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </details>
+    </div>
   );
 }
 
-// ?live=<sessionId>&ws=<wsBase> switches the UI to the real broadcaster.
-// ?rail=1 renders only the Relay rail — the docked terminal-companion sidebar.
+// ---------------------------------------------------------------------------
+// URL / API plumbing
+// ---------------------------------------------------------------------------
+
 function liveConfig(): {
   sessionId: string | null;
   base: string;
@@ -414,10 +191,7 @@ async function requestJson<T>(
 ): Promise<T> {
   const response = await fetch(`${apiBase}${path}`, {
     ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(init.headers ?? {}),
-    },
+    headers: { "content-type": "application/json", ...(init.headers ?? {}) },
   });
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
@@ -437,6 +211,10 @@ function updateLiveUrl(sessionId: string, base: string, api: string): void {
   window.history.replaceState(null, "", url);
 }
 
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
+
 export function App() {
   const config = liveConfig();
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(config.sessionId);
@@ -447,12 +225,15 @@ export function App() {
   const [workspaceDir, setWorkspaceDir] = useState("demo-repo");
   const [initialAgent, setInitialAgent] = useState<AgentId>("claude");
   const [claudeModel, setClaudeModel] = useState("claude-sonnet-4-6");
-  const [codexModel, setCodexModel] = useState("gpt-5-codex");
+  // Blank → let Codex use its account default. A forced "gpt-5-codex" is rejected
+  // by ChatGPT-account Codex ("model is not supported when using a ChatGPT account").
+  const [codexModel, setCodexModel] = useState("");
   const [anthropicKey, setAnthropicKey] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [controlMessage, setControlMessage] = useState("");
   const isLive = currentSessionId !== null;
+  const termHost = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!currentSessionId) return;
@@ -471,20 +252,14 @@ export function App() {
         setInitialAgent(session.sourceAgent);
       })
       .catch(() => {
-        // The event stream still provides useful diagnostics if metadata
-        // hydration is temporarily unavailable.
+        /* event stream still provides diagnostics if hydration is unavailable */
       });
     return () => {
       cancelled = true;
     };
   }, [currentSessionId, apiBase]);
 
-  // Live mode: events come from the server broadcaster.
-  const { events, status } = useRelayStream(
-    currentSessionId,
-    wsBase,
-    apiBase
-  );
+  const { events, status } = useSessionTerminal(currentSessionId, termHost, wsBase, apiBase);
 
   async function runControl(action: string, work: () => Promise<void>): Promise<void> {
     setPendingAction(action);
@@ -504,10 +279,10 @@ export function App() {
 
   async function createSessionRequest(): Promise<string> {
     const sessionId = await createRelaySession(api, {
-        goal: task,
-        verificationCommand,
-        workspaceDir,
-        initialAgent,
+      goal: task,
+      verificationCommand,
+      workspaceDir,
+      initialAgent,
     });
     setCurrentSessionId(sessionId);
     updateLiveUrl(sessionId, wsBase, apiBase);
@@ -541,23 +316,16 @@ export function App() {
   async function startNewSession(): Promise<void> {
     await runControl(`start ${initialAgent}`, async () => {
       const sessionId = await createSessionRequest();
-      await requestJson(
-        apiBase,
-        `/api/sessions/${sessionId}/${initialAgent}/start`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            model: modelFor(initialAgent, {
-              claude: claudeModel,
-              codex: codexModel,
-            }),
-            prompt: task,
-            apiKey: keyFor(initialAgent),
-            apiKeys,
-            models: { claude: claudeModel, codex: codexModel },
-          }),
-        }
-      );
+      await requestJson(apiBase, `/api/sessions/${sessionId}/${initialAgent}/start`, {
+        method: "POST",
+        body: JSON.stringify({
+          model: modelFor(initialAgent, { claude: claudeModel, codex: codexModel }),
+          prompt: task,
+          apiKey: keyFor(initialAgent),
+          apiKeys,
+          models: { claude: claudeModel, codex: codexModel },
+        }),
+      });
     });
   }
 
@@ -575,248 +343,232 @@ export function App() {
     });
   }
 
-  // Resolve what the panels render, from whichever mode is active.
-  const liveLines: Line[] = events.length
-    ? events.map(eventLine)
-    : [
-        {
-          kind: "muted",
-          value:
-            status === "open"
-              ? `connected · waiting for events on ${currentSessionId}…`
-              : status === "error" || status === "closed"
-                ? `broadcaster unavailable (${wsBase}) — start the server`
-                : `connecting to ${wsBase}…`,
-        },
-      ];
-
+  // ---- live derivations -------------------------------------------------
   const phase: Phase = isLive ? derivePhase(events) : "working";
-  const lines = isLive ? liveLines : readyLines;
-  const handoffDone = isLive ? packetReady(events) : false;
+  const active = isLive && events.length ? activeAgent(events) : initialAgent;
   const packet = isLive ? latestHandoffPacket(events) : null;
   const bench = deriveBench(isLive ? events : [], packet);
-  const selectedActiveAgent = isLive && events.length ? activeAgent(events) : initialAgent;
-  const switchTarget = otherAgent(selectedActiveAgent);
-  const sessionComplete = isLive && events.some((event) => event.type === "session.completed");
+  const sessionComplete = isLive && events.some((e) => e.type === "session.completed");
   const sessionFailed =
-    isLive &&
-    events.some(
-      (event) =>
-        event.type === "session.failed" || event.type === "handoff.failed"
-    );
+    isLive && events.some((e) => e.type === "session.failed" || e.type === "handoff.failed");
   const sessionTerminal = sessionComplete || sessionFailed;
-  const activity = isLive
-    ? currentActivity(events, task)
-    : task;
+  const tag = statusLabel(events, phase, isLive);
+  const usage = contextUsage(events, active);
+  const rate = isLive ? rateState(events) : "ok";
+  const migration = isLive ? migrationState(events) : "pending";
+  const activity = isLive ? currentActivity(events, task) : task;
+
+  const switchTarget = otherAgent(active);
+  const busy = pendingAction !== null;
+  const actionsLocked = busy || sessionTerminal || phase === "switching";
+
   const hasNativePicker =
     typeof window !== "undefined" && Boolean(window.relay?.pickWorkspace);
   async function browseWorkspace(): Promise<void> {
     const picked = await window.relay?.pickWorkspace?.();
     if (typeof picked === "string") setWorkspaceDir(picked);
   }
-  // Open the full dashboard (the live terminal = the run logs) in a new window.
-  function openLogs(): void {
-    const params = new URLSearchParams();
-    if (currentSessionId) params.set("live", currentSessionId);
-    params.set("api", apiBase);
-    params.set("ws", wsBase);
-    const url = `${window.location.origin}/?${params.toString()}`;
-    window.open(url, "relay-logs", "width=900,height=640");
-  }
-  const controls = (
-    <div className="controls" aria-label="Session controls">
-      {!isLive ? (
-        <>
-          <label className="field">
-            <span>Workspace</span>
-            {hasNativePicker ? (
-              <div className="input-row">
-                <input
-                  value={workspaceDir}
-                  onChange={(event) => setWorkspaceDir(event.target.value)}
-                  disabled={pendingAction !== null}
-                  placeholder="path the agents work in"
-                />
-                <button
-                  type="button"
-                  className="action"
-                  onClick={browseWorkspace}
-                  disabled={pendingAction !== null}
-                >
-                  Browse…
-                </button>
-              </div>
-            ) : (
-              <input
-                value={workspaceDir}
-                onChange={(event) => setWorkspaceDir(event.target.value)}
-                disabled={pendingAction !== null}
-                placeholder="path the agents work in"
-              />
-            )}
-          </label>
-          <label className="field compact">
-            <span>Start with</span>
-            <select
-              value={initialAgent}
-              onChange={(event) =>
-                setInitialAgent(event.target.value as AgentId)
-              }
-              disabled={pendingAction !== null}
-            >
-              <option value="claude">Claude</option>
-              <option value="codex">Codex</option>
-            </select>
-          </label>
-          <button
-            className="action primary"
-            onClick={startNewSession}
-            disabled={
-              pendingAction !== null ||
-              workspaceDir.trim().length === 0
-            }
-          >
-            {pendingAction?.startsWith("start") ? (
-              <span className="spinner light" />
-            ) : (
-              <Icon name="spark" size={14} />
-            )}
-            Start Baton
-          </button>
-          <details className="advanced">
-            <summary>Advanced</summary>
-            <div className="advanced-fields">
-              <p className="advanced-note">
-                Provider login — only for the real CLIs. Leave blank to use your
-                existing terminal sessions: open <code>claude</code> once to
-                complete sign-in, and run <code>codex login</code> for Codex.
-                Keys entered here go only to the local server for this run —
-                never stored or logged.
-              </p>
-              <label className="field">
-                <span>Anthropic API key</span>
-                <input
-                  type="password"
-                  autoComplete="off"
-                  placeholder="sk-ant-…  (or use claude login)"
-                  value={anthropicKey}
-                  onChange={(event) => setAnthropicKey(event.target.value)}
-                  disabled={pendingAction !== null}
-                />
-              </label>
-              <label className="field">
-                <span>OpenAI API key</span>
-                <input
-                  type="password"
-                  autoComplete="off"
-                  placeholder="sk-…  (or use codex login)"
-                  value={openaiKey}
-                  onChange={(event) => setOpenaiKey(event.target.value)}
-                  disabled={pendingAction !== null}
-                />
-              </label>
-              <label className="field">
-                <span>Claude model</span>
-                <input
-                  value={claudeModel}
-                  onChange={(event) => setClaudeModel(event.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span>Codex model</span>
-                <input
-                  value={codexModel}
-                  onChange={(event) => setCodexModel(event.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span>API</span>
-                <input
-                  value={apiBase}
-                  onChange={(event) => setApiBase(event.target.value)}
-                />
-              </label>
-              <button type="button" className="action" onClick={openLogs}>
-                Open full logs
-              </button>
-            </div>
-          </details>
-        </>
-      ) : (
-        <>
-          <div className="action-grid">
-            <button
-              className="action primary"
-              onClick={() => switchAgent(switchTarget)}
-              disabled={
-                pendingAction !== null || phase === "switching" || sessionTerminal
-              }
-            >
-              {sessionComplete
-                ? "Session complete"
-                : sessionFailed
-                  ? "Session failed"
-                  : `Switch to ${agentLabel(switchTarget)}`}
-            </button>
-            <button
-              className="action"
-              onClick={() => sessionAction("verify", "/verify")}
-              disabled={
-                pendingAction !== null || phase === "switching" || sessionTerminal
-              }
-            >
-              Verify
-            </button>
-          </div>
-          <button type="button" className="action" onClick={openLogs}>
-            Open full logs
-          </button>
-        </>
-      )}
-      {controlMessage && <div className="control-message">{controlMessage}</div>}
-    </div>
-  );
 
   return (
-    <main className={`shell ${config.railOnly ? "rail-only" : ""}`}>
-      <div className="workspace">
-        {!config.railOnly && (
-          <Terminal
-            lines={lines}
-            phase={phase}
-            interactive={
-              isLive && !sessionTerminal && activeSupportsInput(events)
-            }
-            onInput={(text) =>
-              sessionAction("input", "/input", { data: `${text}\n` })
-            }
-          />
+    <main className={`app ${config.railOnly ? "rail-only" : ""}`}>
+      <aside className="sidebar" aria-label="Baton companion">
+        <header className="bar">
+          <BatonMark />
+          <strong>Baton</strong>
+          {isLive && (
+            <span className="session" title={currentSessionId ?? ""}>
+              {currentSessionId?.slice(0, 12)}
+            </span>
+          )}
+          <span className={`status-tag ${tag.tone}`}>[{tag.text}]</span>
+        </header>
+
+        {!isLive ? (
+          <div className="setup">
+            <p className="setup-lead">
+              Power one agent and talk to it directly in the terminal below. Baton
+              watches the context window and rate limits in the background and
+              relays the work to the other agent when a limit hits — same session,
+              no re-explaining.
+            </p>
+
+            <label className="field">
+              <span>Task</span>
+              <textarea
+                rows={3}
+                value={task}
+                onChange={(e) => setTask(e.target.value)}
+                disabled={busy}
+                placeholder="what should the agent do?"
+              />
+            </label>
+
+            <label className="field">
+              <span>Workspace</span>
+              {hasNativePicker ? (
+                <div className="input-row">
+                  <input
+                    value={workspaceDir}
+                    onChange={(e) => setWorkspaceDir(e.target.value)}
+                    disabled={busy}
+                    placeholder="path the agents work in"
+                  />
+                  <button type="button" className="ghost" onClick={browseWorkspace} disabled={busy}>
+                    Browse…
+                  </button>
+                </div>
+              ) : (
+                <input
+                  value={workspaceDir}
+                  onChange={(e) => setWorkspaceDir(e.target.value)}
+                  disabled={busy}
+                  placeholder="path the agents work in"
+                />
+              )}
+            </label>
+
+            <div className="setup-grid">
+              <label className="field">
+                <span>Start with</span>
+                <select
+                  value={initialAgent}
+                  onChange={(e) => setInitialAgent(e.target.value as AgentId)}
+                  disabled={busy}
+                >
+                  <option value="claude">Claude</option>
+                  <option value="codex">Codex</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Verify with</span>
+                <input
+                  value={verificationCommand}
+                  onChange={(e) => setVerificationCommand(e.target.value)}
+                  disabled={busy}
+                  placeholder="npm test"
+                />
+              </label>
+            </div>
+
+            <button
+              className="primary"
+              onClick={startNewSession}
+              disabled={busy || workspaceDir.trim().length === 0}
+            >
+              {pendingAction?.startsWith("start") ? (
+                <span className="spinner light" />
+              ) : (
+                <Icon name="spark" size={14} />
+              )}
+              Start Baton
+            </button>
+
+            <details className="advanced">
+              <summary>Advanced — provider login & models</summary>
+              <div className="advanced-fields">
+                <p className="advanced-note">
+                  For the real CLIs only. Leave blank to use your existing sessions:
+                  open <code>claude</code> once to sign in, run <code>codex login</code> for
+                  Codex. Keys go only to the local server for this run.
+                </p>
+                <label className="field">
+                  <span>Anthropic API key</span>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    placeholder="sk-ant-…"
+                    value={anthropicKey}
+                    onChange={(e) => setAnthropicKey(e.target.value)}
+                    disabled={busy}
+                  />
+                </label>
+                <label className="field">
+                  <span>OpenAI API key</span>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    placeholder="sk-…"
+                    value={openaiKey}
+                    onChange={(e) => setOpenaiKey(e.target.value)}
+                    disabled={busy}
+                  />
+                </label>
+                <div className="setup-grid">
+                  <label className="field">
+                    <span>Claude model</span>
+                    <input value={claudeModel} onChange={(e) => setClaudeModel(e.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span>Codex model</span>
+                    <input
+                      value={codexModel}
+                      onChange={(e) => setCodexModel(e.target.value)}
+                      placeholder="blank = account default"
+                    />
+                  </label>
+                </div>
+                <label className="field">
+                  <span>API</span>
+                  <input value={apiBase} onChange={(e) => setApiBase(e.target.value)} />
+                </label>
+              </div>
+            </details>
+          </div>
+        ) : (
+          <>
+            <div className="term-wrap">
+              <div className="term-host" ref={termHost} />
+              {status !== "open" && (
+                <div className="term-status">
+                  {status === "error" || status === "closed"
+                    ? `broadcaster unavailable (${wsBase}) — start the server`
+                    : `connecting to ${wsBase}…`}
+                </div>
+              )}
+            </div>
+
+            <div className="activity" title={activity}>
+              {activity}
+            </div>
+
+            <Telemetry
+              phase={phase}
+              tokens={usage.tokens}
+              window={usage.window}
+              pct={usage.pct}
+              rate={rate}
+              migration={migration}
+              verifyCommand={verificationCommand}
+              onVerify={() => sessionAction("verify", "/verify")}
+              verifyDisabled={actionsLocked}
+              bench={bench}
+            />
+
+            {controlMessage && <div className="control-message">{controlMessage}</div>}
+
+            <div className="footerbar">
+              <button
+                type="button"
+                className="force"
+                onClick={() => switchAgent(switchTarget)}
+                disabled={actionsLocked}
+                title={`Compress current state and relay to ${agentLabel(switchTarget)} now`}
+              >
+                <Icon name="relay" size={15} />
+                <span>
+                  {sessionComplete
+                    ? "Session complete"
+                    : sessionFailed
+                      ? "Session failed"
+                      : phase === "switching"
+                        ? "Relaying…"
+                        : `Force handoff → ${agentLabel(switchTarget)}`}
+                </span>
+              </button>
+            </div>
+          </>
         )}
-        <Rail
-          phase={phase}
-          handoffDone={handoffDone}
-          live={isLive}
-          agentName={isLive ? activeAgent(events) : initialAgent}
-          migration={isLive ? migrationState(events) : undefined}
-          sessionLabel={isLive ? `session ${currentSessionId}` : "new session"}
-          controls={controls}
-          activity={activity}
-          activityLabel={isLive ? "NOW" : "GOAL"}
-          packet={packet}
-          bench={bench}
-          verifyLabel={verificationCommand}
-          verifyEditable={!isLive}
-          onVerifyChange={setVerificationCommand}
-          failed={sessionFailed}
-          completed={sessionComplete}
-        />
-      </div>
-      {!config.railOnly && (
-        <footer className="note">
-          <span>Quiet while healthy. Ready when an agent fails.</span>
-          <span>validated events · packet v{demoPacket.version}</span>
-        </footer>
-      )}
+      </aside>
     </main>
   );
 }

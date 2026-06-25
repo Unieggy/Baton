@@ -11,104 +11,99 @@ output), compiles a small portable **handoff packet**, launches a **different**
 agent in the same repository, and verifies whether it actually finished — the
 developer never re-explains the task.
 
-Baton is not an editor or a Cursor clone. It transfers work *between* independent
-tools (Claude Code ⇄ Codex CLI) through a visible, provider-neutral manifest.
+Baton is not an editor or a Cursor clone. It runs the **real** Claude Code / Codex
+CLIs embedded in a terminal — you talk to the genuine agent, approval prompts and
+all — and transfers work *between* them (Claude Code ⇄ Codex CLI) through a
+visible, provider-neutral manifest whenever a limit is hit.
+
+![Baton interface](docs/interface.png)
+
+The sidebar above is one continuous session: the real agent's terminal (xterm.js
+over a PTY), a monochrome status label (`[STATUS: CODEX_ACTIVE]`), the ambient
+context / rate / verify telemetry, and a low-profile **Force handoff** control.
 
 ---
 
 ## Quickstart
 
+There are two commands. **The app** runs the real Claude/Codex CLIs embedded in
+a terminal; **dev** runs deterministic fake agents in a browser for UI work.
+
 ```bash
 npm install
-npm run demo
+
+# The app — the genuine claude/codex TUI embedded in the Baton sidebar.
+claude                 # complete Claude sign-in once, then exit
+codex login            # complete Codex/ChatGPT sign-in once
+npm run desktop        # Electron window, docked to a screen edge
 ```
 
-Open the printed dashboard URL (`http://127.0.0.1:4173/?api=…&ws=…`) and click
-**Start Baton**. The demo runs deterministic fake agents end-to-end — no provider
-CLI or auth required. Fake Claude reports a delayed usage limit, Baton
-automatically hands the task to fake Codex, and **Verify** runs the real fixture
-tests.
+Type your task in the embedded terminal and talk to the agent exactly as you
+normally would — approval prompts and all. Baton watches the context window and
+rate limits in the background and, when a limit hits, compiles a handoff packet
+and **relays the work to the other agent inside the same session**. A low-profile
+**Force handoff** control does it on demand.
 
-If those ports are already occupied, choose explicit alternatives:
+The agents run in a real pseudo-terminal (`node-pty`); the UI mirrors it with
+xterm.js. `npm run desktop` starts the server, UI, and Electron shell together;
+closing Electron stops the stack. The Workspace field gets a native **Browse…**
+folder picker. Dock side / float: `RELAY_DOCK=left|right|float npm run desktop`.
+
+### Dev mode (no auth, fake agents)
+
+For UI iteration without the provider CLIs — runs the full handoff loop with
+deterministic fakes in a browser:
 
 ```bash
-PORT=4001 WEB_PORT=4174 npm run demo
+npm run dev   # prints a dashboard URL; open it and click Start Baton
 ```
 
-Run the desktop app against the real subscription-authenticated CLIs:
+You can also run the app with fakes (`RELAY_FAKE_AGENTS=1 npm run desktop`) or
+open the sidebar in any browser at `http://127.0.0.1:4173/?rail=1`.
 
-```bash
-claude                # complete Claude sign-in once, then exit
-codex login           # complete Codex/ChatGPT sign-in once
-npm run desktop:real  # leave API-key fields blank
-```
-
-### Docked sidebar (terminal companion)
-
-Pin the rail beside your real terminal as a frameless desktop window:
-
-```bash
-npm run demo       # in one shell (server + UI)
-npm run sidebar    # in another — opens the rail-only companion
-```
-
-Or open the rail-only view in any browser: `http://127.0.0.1:4173/?rail=1`.
-
-### Desktop companion (Electron)
-
-A native window that snaps to a screen edge — the "magnet" companion — and
-adds a native folder picker for the workspace:
-
-```bash
-npm run desktop              # one-command safe demo; docks right
-npm run desktop:real         # real locally authenticated CLIs
-RELAY_DOCK=left  npm run desktop
-RELAY_DOCK=float npm run desktop
-RELAY_ONTOP=1    npm run desktop  # optional floating/always-on-top mode
-```
-
-The command starts the server, UI, and Electron shell together; closing Electron
-stops the local stack. Inside the desktop app the Workspace field gains a
-**Browse…** button (native OS folder dialog).
-
-## The demo flow
+## The dev-mode flow (`npm run dev`, fake agents)
 
 1. An agent (Claude) starts fixing a real bug in `demo-repo/` — the `users.age`
    migration runs `ALTER TABLE` unconditionally, so the focused test fails.
 2. The agent hits a usage limit with the test still red.
 3. Baton freezes the workspace, distills a validated handoff packet, and launches
    the other agent (Codex) in the same repo from that packet alone.
-4. Codex finishes the task; click **Verify** and Baton runs the real verification
-   command, showing the exit code and verdict.
+4. Codex finishes the task; **Verify** runs the real verification command,
+   showing the exit code and verdict.
 
-The user never re-explains the task during the transfer.
+The user never re-explains the task during the transfer. In the real app
+(`npm run desktop`) the same loop runs against the live, authenticated CLIs.
 
 ## Architecture
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│  React / Vite dashboard (ui/)                                │
-│  live terminal + Baton rail   ◀── WebSocket events           │
-└───────────────┬─────────────────────────────────────────────┘
-                │ HTTP (/api) + WS (/ws/sessions/:id)
-┌───────────────▼─────────────────────────────────────────────┐
+│  React / Vite sidebar (ui/) — Electron or browser           │
+│  xterm.js terminal + Baton telemetry                         │
+│     ▲ agent output (events)      │ keystrokes / resize       │
+└─────┼────────────────────────────┼──────────────────────────┘
+      │ WS /ws/sessions/:id (bidirectional) + HTTP /api
+┌─────┴────────────────────────────▼──────────────────────────┐
 │  Node + TypeScript server (apps/server/src/)                 │
 │  ┌────────────┐ ┌───────────┐ ┌────────────┐ ┌────────────┐ │
-│  │ session    │ │ process   │ │ orchestr.  │ │ broadcaster│ │
-│  │ manager    │ │ runner    │ │ + handoff  │ │ (WS)       │ │
-│  └────────────┘ └───────────┘ └─────┬──────┘ └────────────┘ │
-│  ┌────────────┐ ┌───────────┐       │  ┌──────────────────┐ │
-│  │ adapters   │ │ verifier  │       └─▶│ event store      │ │
-│  │ claude/cdx │ │           │          │ Redis | in-memory│ │
-│  └─────┬──────┘ └───────────┘          └──────────────────┘ │
-└────────┼─────────────────────────────────────────────────────┘
-         ▼
-   Local Git repository (the workspace the agents operate in)
+│  │ session    │ │ pty-runner │ │ orchestr.  │ │ broadcaster│ │
+│  │ manager    │ │ (node-pty) │ │ + handoff  │ │ (WS, I/O)  │ │
+│  └────────────┘ └─────┬──────┘ └─────┬──────┘ └────────────┘ │
+│  ┌──────────────────┐ │             │  ┌──────────────────┐  │
+│  │ interactive       │◀┘             └─▶│ event store      │  │
+│  │ adapters claude/cdx│                 │ Redis | in-memory│  │
+│  └─────────┬──────────┘                 └──────────────────┘  │
+└────────────┼─────────────────────────────────────────────────┘
+             ▼
+   real `claude` / `codex` TUI  ⟶  Local Git repository (workspace)
 ```
 
-The browser requests actions; the server controls processes and secrets.
-Evidence flows from the repo and command exit codes — **the repository and
-executable evidence outrank agent summaries.**
+The real agents run inside a pseudo-terminal (`node-pty`); the sidebar mirrors
+them with xterm.js over a single bidirectional WebSocket. Baton observes the
+output stream for limits and routes the handoff — it never sits between you and
+the agent. Evidence flows from the repo and command exit codes — **the repository
+and executable evidence outrank agent summaries.** (`npm run dev` swaps the
+interactive adapters for deterministic fakes; no PTY or auth required.)
 
 The local control server binds to loopback only (`127.0.0.1`) and accepts
 browser/WebSocket traffic from the configured dashboard origin.
@@ -141,12 +136,12 @@ without it, an in-memory store with the same interface is used.
 
 ## Built with
 
-TypeScript · Node.js · React · Vite · Redis · WebSocket · Zod · Claude · Codex
+TypeScript · Node.js · React · Vite · node-pty · xterm.js · Electron · Redis ·
+WebSocket · Zod · Claude · Codex
 
 ## What's next
 
-- Real multi-CLI runs with authenticated `claude` + `codex`
 - Session persistence across server restarts
+- Parse each CLI's own context/usage readout (the meter is currently estimated)
 - BatonBench baseline runs (the Baton side is measured; no-Baton is still empty)
-- Controlled multi-hop handoffs
-- Signed desktop packaging and a user-configurable dock layout
+- Signed, single-binary Electron packaging (bundled `node-pty` via electron-rebuild)

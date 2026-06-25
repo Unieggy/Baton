@@ -23,7 +23,11 @@ import {
   fallbackCreateHandoff,
   type EventStore,
 } from "./orchestrator";
-import { ClaudeAdapter, CodexAdapter, FakeAgentAdapter } from "./adapters";
+import {
+  ClaudeInteractiveAdapter,
+  CodexInteractiveAdapter,
+  FakeAgentAdapter,
+} from "./adapters";
 import { RedisEventStore } from "./event-store";
 import { createApiRouter, type ApiHandler } from "./routes";
 import { completeBundledDemo } from "./demo-workspace";
@@ -147,13 +151,18 @@ export function createAppRuntime(
             }),
         }
       : {
-          claude: () => new ClaudeAdapter(),
-          codex: () => new CodexAdapter(),
+          // Real mode runs the genuine interactive TUIs inside a PTY, so the
+          // live session, memory, and approval prompts behave as in a terminal.
+          claude: () => new ClaudeInteractiveAdapter(),
+          codex: () => new CodexInteractiveAdapter(),
         };
     orchestrator = new Orchestrator({
       sessions,
       store,
       adapters,
+      // A long interactive session may legitimately relay several times; a
+      // freshly-resumed agent starts with low context, so this isn't ping-pong.
+      maxAutomaticHandoffs: 8,
       // Demo mode must never invoke a real provider merely to distill context.
       createHandoff: env.RELAY_FAKE_AGENTS
         ? fallbackCreateHandoff
@@ -168,6 +177,25 @@ export function createAppRuntime(
       },
     });
   }
+  // Terminal clients send keystrokes / resizes back over the same socket; route
+  // them to the live agent's PTY. Guarded so input to a dead session is a no-op.
+  const liveOrchestrator = orchestrator;
+  broadcaster.onMessage = (sessionId, msg) => {
+    try {
+      if (msg.t === "stdin" && typeof msg.data === "string") {
+        liveOrchestrator.sendInput(sessionId, msg.data);
+      } else if (
+        msg.t === "resize" &&
+        typeof msg.cols === "number" &&
+        typeof msg.rows === "number"
+      ) {
+        liveOrchestrator.resize(sessionId, msg.cols, msg.rows);
+      }
+    } catch {
+      /* no live agent / unknown session — ignore */
+    }
+  };
+
   const api = createApiRouter({ sessions, orchestrator });
 
   const server = http.createServer((req, res) => {

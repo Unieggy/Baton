@@ -69,6 +69,9 @@ export interface AgentAdapter {
   start(opts: AgentStartOptions, onEvent: RelayEventSink): Promise<void>;
   /** Send a chunk to the running agent's stdin. */
   sendInput(data: string): void;
+  /** Resize the underlying terminal so an interactive TUI reflows. No-op for
+   *  one-shot / non-PTY adapters. */
+  resize?(cols: number, rows: number): void;
   /** Current lifecycle status. */
   status(): AgentStatus;
   /** Best-effort usage meter for proactive context-pressure triggers. */

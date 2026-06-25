@@ -126,3 +126,25 @@ test("broadcast rejects a payload that is not a schema-valid RelayEvent", () => 
   const broadcaster = new SessionBroadcaster();
   assert.throws(() => broadcaster.broadcast({ not: "an event" }));
 });
+
+test("inbound text frames are decoded and forwarded to onMessage", async () => {
+  const broadcaster = new SessionBroadcaster();
+  const got: Array<{ sessionId: string; msg: unknown }> = [];
+  broadcaster.onMessage = (sessionId, msg) => got.push({ sessionId, msg });
+  const { server, url } = await listen(broadcaster);
+  const sessionId = "sess-input";
+
+  const ws = new WebSocket(url(sessionId));
+  await opened(ws);
+  await waitFor(() => broadcaster.clientCount(sessionId) === 1);
+
+  ws.send(JSON.stringify({ t: "stdin", data: "ls\r" }));
+  ws.send(JSON.stringify({ t: "resize", cols: 120, rows: 40 }));
+
+  await waitFor(() => got.length === 2);
+  assert.deepEqual(got[0], { sessionId, msg: { t: "stdin", data: "ls\r" } });
+  assert.deepEqual(got[1], { sessionId, msg: { t: "resize", cols: 120, rows: 40 } });
+
+  ws.close();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+});

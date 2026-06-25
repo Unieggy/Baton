@@ -49,9 +49,26 @@ function encodeTextFrame(text: string): Buffer {
 const PONG_EMPTY = Buffer.from([0x8a, 0x00]); // FIN + pong, zero-length
 const CLOSE_EMPTY = Buffer.from([0x88, 0x00]); // FIN + close, zero-length
 
+/** A control message a terminal client sends back over the same socket. */
+export interface InboundMessage {
+  t: "stdin" | "resize" | string;
+  data?: string;
+  cols?: number;
+  rows?: number;
+}
+
 export class SessionBroadcaster {
   /** sessionId → the set of live client sockets subscribed to it. */
   private readonly clients = new Map<string, Set<Duplex>>();
+  /** Partial inbound frame bytes retained per socket across `data` events. */
+  private readonly inbound = new WeakMap<Duplex, Buffer>();
+
+  /**
+   * Optional handler for client→server control messages (terminal stdin/resize).
+   * Set by the app after the orchestrator exists. The socket stays a push channel
+   * for events; this is the only inbound application data it acts on.
+   */
+  onMessage?: (sessionId: string, msg: InboundMessage) => void;
 
   constructor(private readonly allowedOrigin?: string) {}
 
@@ -109,6 +126,7 @@ export class SessionBroadcaster {
     set.add(socket);
 
     const cleanup = (): void => {
+      this.inbound.delete(socket);
       const live = this.clients.get(sessionId);
       if (!live) return;
       live.delete(socket);
@@ -120,37 +138,95 @@ export class SessionBroadcaster {
       cleanup();
       socket.destroy();
     });
-    // Drain inbound bytes; only react to control frames. Never let a parse
-    // error take down the server.
+    // Decode inbound frames: control frames (ping/close) are answered; text
+    // frames are forwarded to `onMessage` (terminal stdin/resize). Never let a
+    // parse error take down the server.
     socket.on("data", (buf: Buffer) => {
       try {
-        this.handleInbound(socket, buf);
+        this.handleInbound(sessionId, socket, buf);
       } catch {
         /* ignore malformed client frames */
       }
     });
   }
 
-  private handleInbound(socket: Duplex, buf: Buffer): void {
-    if (buf.length < 1) return;
-    const opcode = buf[0]! & 0x0f; // opcode lives in the unmasked first byte
-    if (opcode === 0x8) {
-      // close → echo a close and end the socket
-      try {
-        socket.write(CLOSE_EMPTY);
-      } catch {
-        /* socket already gone */
+  /**
+   * Parse as many complete RFC 6455 frames as the buffer holds (browsers mask
+   * client→server frames), retaining any partial trailing frame for the next
+   * `data` event. Close/ping are answered; text frames become `InboundMessage`s.
+   */
+  private handleInbound(sessionId: string, socket: Duplex, incoming: Buffer): void {
+    const prev = this.inbound.get(socket);
+    let buf = prev ? Buffer.concat([prev, incoming]) : incoming;
+    let offset = 0;
+
+    while (buf.length - offset >= 2) {
+      const b0 = buf[offset]!;
+      const b1 = buf[offset + 1]!;
+      const opcode = b0 & 0x0f;
+      const masked = (b1 & 0x80) !== 0;
+      let len = b1 & 0x7f;
+      let p = offset + 2;
+
+      if (len === 126) {
+        if (buf.length - offset < 4) break;
+        len = buf.readUInt16BE(offset + 2);
+        p = offset + 4;
+      } else if (len === 127) {
+        if (buf.length - offset < 10) break;
+        len = Number(buf.readBigUInt64BE(offset + 2));
+        p = offset + 10;
       }
-      socket.end();
-    } else if (opcode === 0x9) {
-      // ping → pong (standard clients don't require the payload echoed back)
-      try {
-        socket.write(PONG_EMPTY);
-      } catch {
-        /* socket already gone */
+
+      const maskLen = masked ? 4 : 0;
+      if (buf.length - p < maskLen + len) break; // frame not fully arrived yet
+
+      let payload: Buffer;
+      if (masked) {
+        const mask = buf.subarray(p, p + 4);
+        const data = buf.subarray(p + 4, p + 4 + len);
+        payload = Buffer.allocUnsafe(len);
+        for (let i = 0; i < len; i++) payload[i] = data[i]! ^ mask[i & 3]!;
+      } else {
+        payload = buf.subarray(p, p + len);
       }
+      offset = p + maskLen + len;
+
+      if (opcode === 0x8) {
+        try {
+          socket.write(CLOSE_EMPTY);
+        } catch {
+          /* already gone */
+        }
+        socket.end();
+        this.inbound.delete(socket);
+        return;
+      } else if (opcode === 0x9) {
+        try {
+          socket.write(PONG_EMPTY);
+        } catch {
+          /* already gone */
+        }
+      } else if (opcode === 0x1) {
+        this.dispatchMessage(sessionId, payload.toString("utf8"));
+      }
+      // binary (0x2) / pong (0xA) are ignored — this is a control + text channel.
     }
-    // text / binary / pong from a client are ignored — this is a push channel.
+
+    this.inbound.set(socket, buf.subarray(offset));
+  }
+
+  private dispatchMessage(sessionId: string, text: string): void {
+    if (!this.onMessage) return;
+    let msg: unknown;
+    try {
+      msg = JSON.parse(text);
+    } catch {
+      return;
+    }
+    if (msg && typeof msg === "object" && typeof (msg as InboundMessage).t === "string") {
+      this.onMessage(sessionId, msg as InboundMessage);
+    }
   }
 
   /**

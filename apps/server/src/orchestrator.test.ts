@@ -319,3 +319,58 @@ test("stopAll stops every live adapter", async () => {
   await orch.stopAll();
   assert.equal(adapter.status(), "exited");
 });
+
+test("sendMessage forwards to stdin when the live agent accepts input", async () => {
+  const { orch, sessions, broadcast } = makeOrchestrator();
+  const s = newSession(sessions);
+  await orch.startClaude(s.id, { prompt: "start" });
+
+  await orch.sendMessage(s.id, "another hint");
+
+  // The fake echoes stdin as terminal output; the provider never changes.
+  assert.ok(
+    broadcast.some(
+      (e) =>
+        e.type === "terminal.output" &&
+        String((e.payload as { chunk?: string }).chunk ?? "").includes("echo: another hint")
+    )
+  );
+  assert.equal(sessions.get(s.id).state, "claude_running");
+});
+
+test("sendMessage re-runs the current provider when the agent is one-shot", async () => {
+  const sessions = new SessionManager();
+  const store = new InMemoryEventStore();
+  const broadcast: RelayEvent[] = [];
+  const orch = new Orchestrator({
+    sessions,
+    store,
+    adapters: {
+      claude: () => new FakeAgentAdapter({ id: "claude", supportsInput: false }),
+      codex: () => new FakeAgentAdapter({ id: "codex", supportsInput: false }),
+    },
+    createHandoff: fallbackCreateHandoff,
+    onEvent: (e) => broadcast.push(e),
+  });
+  const s = newSession(sessions);
+  await orch.startClaude(s.id, { prompt: "start" });
+  await orch.stopAll(); // the one-shot turn finishes
+
+  await orch.sendMessage(s.id, "continue the task");
+
+  // A fresh run of the SAME provider starts with the message as its prompt.
+  assert.equal(sessions.get(s.id).state, "claude_running");
+  assert.equal(
+    broadcast.filter((e) => e.type === "session.started").length,
+    1, // re-run is a new turn, not a new session
+  );
+  assert.ok(
+    broadcast.some(
+      (e) =>
+        e.type === "terminal.output" &&
+        String((e.payload as { chunk?: string }).chunk ?? "").includes(
+          "fake received prompt: continue the task"
+        )
+    )
+  );
+});

@@ -53,12 +53,14 @@ export const TERMINAL_STATES: readonly SessionState[] = ["completed", "failed"];
  */
 const BASE_TRANSITIONS: Record<SessionState, SessionState[]> = {
   created: ["claude_running", "codex_running"],
-  claude_running: ["handoff_building", "verifying"],
+  // The self-loop is the per-message chat re-run: a one-shot agent finishes a
+  // turn, then the next user message starts a fresh run of the same provider.
+  claude_running: ["handoff_building", "verifying", "claude_running"],
   handoff_building: ["handoff_ready"],
   // A built packet can be picked up by Codex (the demo) or resumed on Claude.
   handoff_ready: ["codex_running", "claude_running"],
-  // Codex either runs verification or hands back for another switch.
-  codex_running: ["verifying", "handoff_building"],
+  // Codex either runs verification, hands back, or takes another chat turn.
+  codex_running: ["verifying", "handoff_building", "codex_running"],
   // Verification passes (completed) or fails and work continues.
   verifying: ["completed", "codex_running"],
   completed: [],

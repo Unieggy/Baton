@@ -7,17 +7,12 @@
     "apps/*"
   ],
   "scripts": {
+    "postinstall": "node scripts/fix-pty.mjs",
+    "desktop": "node scripts/desktop.mjs",
+    "dev": "RELAY_FAKE_AGENTS=1 node scripts/demo.mjs",
     "test": "node --import tsx --test tests/*.test.ts && node --import tsx test-detection.ts && npm run ws:test && npm test --workspaces --if-present",
     "typecheck": "tsc --noEmit && npm run typecheck --workspaces --if-present",
-    "ui:dev": "vite --config ui/vite.config.ts",
     "ui:build": "tsc -p ui/tsconfig.json && vite build --config ui/vite.config.ts",
-    "demo": "node scripts/demo.mjs",
-    "sidebar": "node scripts/sidebar.mjs",
-    "desktop": "node scripts/desktop.mjs",
-    "desktop:real": "RELAY_FAKE_AGENTS=0 node scripts/desktop.mjs",
-    "desktop:shell": "electron electron/main.cjs",
-    "demo:redis": "tsx redis-demo.ts",
-    "ws:client": "tsx ws-test-client.ts",
     "ws:test": "node --import tsx --test ws-test-client.test.ts"
   },
   "keywords": [],
@@ -37,6 +32,8 @@
     "vite": "^8.0.16"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "ioredis": "^5.11.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

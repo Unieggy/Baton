@@ -17,6 +17,12 @@ export interface MigrationResult {
  *   if (!cols.includes("age")) db.run("ALTER TABLE users ADD COLUMN age INT");
  */
 export function applyMigration(db: DB): MigrationResult {
-  db.run("ALTER TABLE users ADD COLUMN age INT");
+  const cols = db.tableInfo("users").map((c) => c.name);
+  if (!cols.includes("age")) {
+    const columns = db.tableInfo("users").map((column) => column.name);
+  if (!columns.includes("age")) {
+    db.run("ALTER TABLE users ADD COLUMN age INT");
+  }
+  }
   return { ok: true };
 }

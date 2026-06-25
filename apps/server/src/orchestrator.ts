@@ -151,6 +151,63 @@ export class Orchestrator {
     rt.adapter.sendInput(data);
   }
 
+  /** Resize the live agent's terminal so an interactive TUI reflows. */
+  resize(sessionId: string, cols: number, rows: number): void {
+    this.runtime.get(sessionId)?.adapter?.resize?.(cols, rows);
+  }
+
+  /**
+   * Deliver a chat message to the *active* agent — the single-chat illusion.
+   *
+   * If the live agent accepts stdin (interactive adapters / demo fakes) the
+   * message is forwarded directly. Otherwise — the one-shot CLIs — a fresh run
+   * of the current provider is started with the message as its prompt, resuming
+   * from the saved handoff packet when one exists so prior context travels with
+   * the turn. The active provider never changes here; handoffs are explicit.
+   */
+  async sendMessage(sessionId: string, text: string): Promise<void> {
+    const rt = this.ensureRuntime(sessionId);
+    if (
+      rt.adapter?.status() === "running" &&
+      rt.adapter.capabilities().supportsInput
+    ) {
+      rt.adapter.sendInput(text);
+      return;
+    }
+    if (rt.adapter?.status() === "running") {
+      throw new Error("The active agent is still working on the previous turn.");
+    }
+
+    const provider = rt.provider;
+    const targetState =
+      provider === "claude" ? "claude_running" : "codex_running";
+    const packet = await this.deps.store.loadHandoff(sessionId);
+    let manifestPath: string | undefined;
+    if (packet) {
+      manifestPath = path.join(
+        os.tmpdir(),
+        `relay-handoff-${sessionId}-${randomUUID()}.json`
+      );
+      fs.writeFileSync(manifestPath, JSON.stringify(packet, null, 2));
+    }
+    try {
+      await this.startAgent(sessionId, provider, targetState, {
+        model: this.providerModels.get(sessionId)?.[provider],
+        prompt: text,
+        apiKey: this.providerKey(sessionId, provider),
+        manifestPath,
+      });
+    } finally {
+      if (manifestPath) {
+        try {
+          fs.unlinkSync(manifestPath);
+        } catch {
+          /* already removed */
+        }
+      }
+    }
+  }
+
   /**
    * Build a handoff packet from current evidence and make the session ready for
    * the next agent. On any failure the session is moved to `failed` rather than

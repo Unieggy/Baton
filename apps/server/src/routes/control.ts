@@ -3,6 +3,7 @@
  * --------------------------------------------------------
  *   POST /api/sessions/:id/claude/start   start Claude
  *   POST /api/sessions/:id/input          forward stdin to the live agent
+ *   POST /api/sessions/:id/message        chat the active agent (input or re-run)
  *   POST /api/sessions/:id/handoff        build the handoff packet
  *   POST /api/sessions/:id/codex/start    resume with Codex from the packet
  *   POST /api/sessions/:id/verify         run the verification command
@@ -43,9 +44,10 @@ const StartBody = z
   })
   .default({});
 const InputBody = z.object({ data: z.string().min(1, "data is required") });
+const MessageBody = z.object({ text: z.string().min(1, "text is required") });
 
 const ACTION =
-  /^\/api\/sessions\/([^/]+)\/(claude\/start|codex\/start|input|handoff|verify|diff|events)$/;
+  /^\/api\/sessions\/([^/]+)\/(claude\/start|codex\/start|input|message|handoff|verify|diff|events)$/;
 
 function orchestratorOf(deps: ControlDeps): Orchestrator {
   if (!deps.orchestrator) {
@@ -89,6 +91,13 @@ export async function handleControlRoutes(
       requireMethod(req, "POST", pathname);
       const { data } = InputBody.parse(await readJsonBody(req));
       orch.sendInput(id, data);
+      sendJson(res, 200, { ok: true });
+      return true;
+    }
+    case "message": {
+      requireMethod(req, "POST", pathname);
+      const { text } = MessageBody.parse(await readJsonBody(req));
+      await orch.sendMessage(id, text);
       sendJson(res, 200, { ok: true });
       return true;
     }
