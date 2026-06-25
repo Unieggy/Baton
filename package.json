@@ -13,7 +13,8 @@
     "test": "node --import tsx --test tests/*.test.ts && node --import tsx test-detection.ts && npm run ws:test && npm test --workspaces --if-present",
     "typecheck": "tsc --noEmit && npm run typecheck --workspaces --if-present",
     "ui:build": "tsc -p ui/tsconfig.json && vite build --config ui/vite.config.ts",
-    "ws:test": "node --import tsx --test ws-test-client.test.ts"
+    "ws:test": "node --import tsx --test ws-test-client.test.ts",
+    "demo:redis": "tsx redis-demo.ts"
   },
   "keywords": [],
   "author": "",
